@@ -27,7 +27,13 @@
 
 ## 安装
 
-以 Claude Code Skill 形式使用，放到 `~/.claude/skills/` 下即可被自动发现：
+**方式一（推荐）· `npx skills`** — 用 [vercel-labs/skills](https://github.com/vercel-labs/skills) 一行安装（agent 与安装范围由 CLI 自动识别 / 交互选择）：
+
+```bash
+npx skills add xiapuyang/youtube-summary
+```
+
+**方式二 · `git clone`** — 直接克隆到 skills 目录：
 
 ```bash
 git clone https://github.com/xiapuyang/youtube-summary.git ~/.claude/skills/youtube-summary
