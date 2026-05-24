@@ -1,6 +1,6 @@
 # youtube-summary · 视频字幕提取 + 结构化总结
 
-> 一个 [Claude Code](https://docs.claude.com/en/docs/claude-code) Skill：丢给它一条 YouTube 或 Bilibili 链接，它自动拉字幕、存一份带时间戳的原始转录，再生成一份结构化的深度总结。
+> 一个通用 **Skill**：丢给它一条 YouTube 或 Bilibili 链接，它自动拉字幕、存一份带时间戳的原始转录，再生成一份结构化的深度总结。任何支持 Skills 的 AI agent 都能用。
 
 把链接粘进对话即可触发，无需记命令。流程：**识别平台 → 下载字幕 → 清洗 → 存原始转录 → 生成总结**。
 
@@ -33,19 +33,19 @@
 npx skills add xiapuyang/youtube-summary
 ```
 
-**方式二 · `git clone`** — 直接克隆到 skills 目录：
+**方式二 · `git clone`** — 直接克隆到你 agent 的 skills 目录（下例以 `~/.claude/skills/` 为例，换成你 agent 实际的 skills 路径即可）：
 
 ```bash
 git clone https://github.com/xiapuyang/youtube-summary.git ~/.claude/skills/youtube-summary
 ```
 
-装好后重启 Claude Code，确认 skill 已加载。
+装好后重启你的 agent，确认 skill 已加载。
 
 ---
 
 ## 使用
 
-直接把链接发给 Claude，或用自然语言触发：
+直接把链接发给你的 agent，或用自然语言触发：
 
 ```
 帮我总结这个视频 https://www.youtube.com/watch?v=xxxx
