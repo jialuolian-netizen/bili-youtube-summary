@@ -1,5 +1,5 @@
 ---
-name: youtube-summary
+name: bili-youtube-summary
 description: >
   Extract subtitles & frames from YouTube/Bilibili, generate structured 9-section summary.
   Supports: text mode (subtitles → LLM) and visual mode (ffmpeg + Gemini/GPT-5.5).
@@ -46,18 +46,24 @@ See `references/cookies-setup.md` for detailed steps.
 
 ### API Keys
 
-For visual analysis, configure environment variables (or hardcode in script):
+> ⚠️ **首次使用前必须配置，否则视觉模式不可用。** 文本模式（有字幕的视频）无需 API key。
 
-```bash
-# Gemini (free, 1500 req/day, for quick mode)
-# Get key at: https://aistudio.google.com/apikey
-GEMINI_API_KEY="your-gemini-key-here"
+**Gemini API Key**（免费，1500 次/天，用于 `--quick` 快速视觉模式）：
+1. 访问 https://aistudio.google.com/apikey
+2. 用 Google 账号登录（没有则注册一个，免费）
+3. 点击 "Create API Key" → 复制 key
+4. 设为环境变量: `setx GEMINI_API_KEY "你的key"` (Windows) 或 `export GEMINI_API_KEY="你的key"` (Mac)
 
-# Leihuo GPT-5.5 (for deep mode, ~$0.18/video)
-# Get key + base URL from your Leihuo gateway console
-LEIHUO_API_KEY="your-leihuo-key-here"
-LEIHUO_API_BASE="https://ai.leihuo.netease.com/v1/chat/completions"
-```
+**雷火网关 Key**（企业付费，~$0.18/次，用于 `--deep` 深度视觉模式）：
+1. 确认你已接入雷火大模型网关（公司内部服务，非雷火员工请跳过）
+2. 在网关控制台找到 API Key 和 Base URL
+3. 设为环境变量: `setx LEIHUO_API_KEY "你的key"` + `setx LEIHUO_API_BASE "https://ai.leihuo.netease.com/v1/chat/completions"`
+
+**无 Key 时的降级行为**：
+- 有 Gemini key → `--quick` 模式可用
+- 有雷火 key → `--deep` 模式可用
+- 两个都没有 → 仅文本模式可用（有字幕的视频），无字幕视频会报错提示缺少 key
+- 同事间可共用 key（Gemini 有每日额度上限，建议各自注册）
 
 ---
 
@@ -166,6 +172,10 @@ Clean the subtitle, read `references/output-formats.md` for templates, then gene
 import base64, json, urllib.request, os
 
 API_KEY = os.environ.get('GEMINI_API_KEY')
+if not API_KEY:
+    print("ERROR: GEMINI_API_KEY not set. Get a free key at https://aistudio.google.com/apikey")
+    print("Or use --deep mode with a Leihuo key instead.")
+    exit(1)
 FRAMES = os.path.join(TMP, 'frames')
 frame_files = sorted([f for f in os.listdir(FRAMES) if f.endswith('.jpg')])
 
@@ -195,6 +205,10 @@ frame_descriptions = gemini_result["candidates"][0]["content"]["parts"][0]["text
 import base64, json, urllib.request, os
 
 LEIHUO_KEY = os.environ.get('LEIHUO_API_KEY')
+if not LEIHUO_KEY:
+    print("ERROR: LEIHUO_API_KEY not set. This requires a Leihuo gateway account.")
+    print("If you don't have one, use --quick mode instead (free, requires GEMINI_API_KEY).")
+    exit(1)
 LEIHUO_URL = os.environ.get('LEIHUO_API_BASE', 'https://ai.leihuo.netease.com/v1/chat/completions')
 
 # Build vision message with all frames (GPT-5.5 supports image_url)
