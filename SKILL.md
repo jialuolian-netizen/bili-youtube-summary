@@ -1,7 +1,7 @@
 ---
 name: bili-youtube-summary
 description: >
-  Extract subtitles & frames from YouTube/Bilibili, generate structured 9-section summary.
+  Extract subtitles, danmaku & frames from YouTube/Bilibili, generate structured 9-section summary.
   Supports: text mode (subtitles → LLM) and visual mode (ffmpeg + Gemini/GPT-5.5).
   Two visual tiers: --deep (GPT-5.5, ~$0.18) or --quick (Gemini, free).
   Triggers: ANY URL containing youtube.com, youtu.be, bilibili.com, or b23.tv.
@@ -103,11 +103,46 @@ if (-not $SUB) {
 
 # Get metadata via B站 API or yt-dlp
 if ($PLATFORM -eq "bilibili") {
-    $TITLE = (Invoke-RestMethod "https://api.bilibili.com/x/web-interface/view?bvid=$BV").data.title
-    $UPLOADER = (Invoke-RestMethod "https://api.bilibili.com/x/web-interface/view?bvid=$BV").data.owner.name
+    $META = Invoke-RestMethod "https://api.bilibili.com/x/web-interface/view?bvid=$BV"
+    $TITLE = $META.data.title
+    $UPLOADER = $META.data.owner.name
+    $CID = $META.data.cid
+    $DM_COUNT = $META.data.stat.danmaku
 } else {
     $meta = yt-dlp --no-update --dump-json $URL 2>$null | ConvertFrom-Json
     $TITLE = $meta.title; $UPLOADER = $meta.uploader
+}
+
+# ---- Danmaku (B站 only) ----
+if ($PLATFORM -eq "bilibili" -and $CID) {
+    $DM_RAW = (Invoke-WebRequest "https://api.bilibili.com/x/v1/dm/list.so?oid=$CID").Content
+    $DM_FILE = Join-Path $TMP "danmaku.xml"
+    $DM_RAW | Out-File $DM_FILE -Encoding UTF8
+    # Parse danmaku: extract text + time from <d p="...">text</d>
+    $dm_entries = @()
+    $regex = [regex]'<d p="([^"]+)"[^>]*>([^<]+)</d>'
+    foreach ($m in $regex.Matches($DM_RAW)) {
+        $params = $m.Groups[1].Value -split ','
+        $dm_time = [float]$params[0]
+        $dm_text = $m.Groups[2].Value
+        $dm_entries += @{time=$dm_time; text=$dm_text}
+    }
+    # Aggregate into 10s buckets for density analysis
+    $buckets = @{}
+    foreach ($d in $dm_entries) {
+        $bucket = [math]::Floor($d.time / 10) * 10
+        if (-not $buckets[$bucket]) { $buckets[$bucket] = @() }
+        $buckets[$bucket] += $d.text
+    }
+    # Print top 8 densest segments
+    $ranked = $buckets.Keys | Sort-Object { -$buckets[$_].Count } | Select-Object -First 8
+    foreach ($k in $ranked) {
+        $count = $buckets[$k].Count
+        $mm = [math]::Floor($k / 60)
+        $ss = $k % 60
+        $samples = ($buckets[$k] | Sort-Object | Get-Unique | Select-Object -First 5) -join " ; "
+        Write-Output "DMBUCKET|$k|$($mm):$($ss.ToString('00'))|$count|$samples"
+    }
 }
 
 # Download low-res video (always needed for scene detection)
@@ -156,6 +191,15 @@ for i, t in enumerate(filtered):
 for i, t in enumerate(filtered):
     print(f"SCENE|{i}|{t}|{int(t//60)}:{int(t%60):02d}")
 ```
+
+### Step 2b — Danmaku Analysis (B站 only)
+
+The `DMBUCKET|...` lines already output by Step 1 are fed directly into the LLM summary prompt in Step 3. No additional parsing step needed. The LLM receives:
+
+- `$DM_COUNT` — total danmaku count from the B站 view API
+- `DMBUCKET|<second>|<timestamp>|<count>|<samples>` — top 8 densest 10-second segments with representative danmaku text
+
+If no danmaku data (YouTube or failed fetch), skip this section in the summary prompt.
 
 ### Step 3 — Generate Summary
 
@@ -231,25 +275,29 @@ summary = result["choices"][0]["message"]["content"]
 # Cost: input=~2000 completion=~3500 → ~$0.18
 ```
 
-#### 9-Section Summary Prompt Template
+#### Summary Prompt Template
 
 All modes use this structure. Read `references/output-formats.md` for exact section headers.
 
 ```
 Analyze this video. Title: {TITLE}, Uploader: {UPLOADER}.
+Total danmaku: {DM_COUNT} (B站 only).
 
 {Subtitle transcript OR frame descriptions}
 
-Generate a 9-section structured summary in Chinese:
+{Danmaku density analysis — if B站}
+
+Generate a structured summary (9-10 sections, depending on danmaku availability) in Chinese:
 1. 章节概览 — timestamped chapter table
 2. 总体摘要 — 3-5 sentence synthesis + 3-5 key highlights (Chain of Density)
 3. 话题章节 — 4-8 major topics, each 3-5 bullet points (2-3 sentences each)
 4. 关键引用 — verbatim quotes in blockquotes (skip if no spoken content)
-5. 新颖观点 — non-mainstream insights, 2-3 sentences each
-6. 反直觉观点 — "Common belief: X → Actual: Y" format
-7. 核心张力 — opposing forces, 2-3 sentences per side
-8. 方法论 — reusable design frameworks, sub-bullets for steps
-9. 关键数据 — specific numbers only, never fabricate
+5. 弹幕反应 — (B站 only) highlight-density segments with representative danmaku samples + audience sentiment clusters. Format: timestamp → density count → common reactions. Skip if no danmaku data.
+6. 新颖观点 — non-mainstream insights, 2-3 sentences each
+7. 反直觉观点 — "Common belief: X → Actual: Y" format
+8. 核心张力 — opposing forces, 2-3 sentences per side
+9. 方法论 — reusable design frameworks, sub-bullets for steps
+10. 关键数据 — specific numbers only, never fabricate
 
 Tags: #关卡设计 #场景叙事 #{game_name}
 
@@ -262,8 +310,8 @@ Omit any section without relevant content. Never fabricate. Voice: state ideas d
 
 Save two files to the output directory (default: current directory, or `YOUTUBE_SUBTITLES_DIR`):
 
-1. `{title}.md` — full timestamped transcript (if subtitles exist)
-2. `{title}-summary.md` — 9-section structured summary (always generated)
+1. `{title}.md` — full timestamped transcript (if subtitles exist) + danmaku density table (if B站)
+2. `{title}-summary.md` — 9/10-section structured summary (always generated; 10-section when danmaku data available)
 
 Obsidian-style frontmatter with `title`, `source`, `author`, `published`, `tags`, `type: source`.
 
