@@ -1,4 +1,4 @@
-# youtube-summary · 视频字幕提取 + 结构化总结
+# bili-youtube-summary · 视频字幕提取 + 结构化总结
 
 > 一个通用 **Skill**：丢给它一条 YouTube 或 Bilibili 链接，它自动拉字幕、存一份带时间戳的原始转录，再生成一份结构化的深度总结。任何支持 Skills 的 AI agent 都能用。
 
