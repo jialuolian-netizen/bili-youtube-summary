@@ -1,82 +1,123 @@
-# bili-youtube-summary · 视频字幕提取 + 结构化总结
+# bili-youtube-summary · 视频深度分析 Skill
 
-> 一个通用 **Skill**：丢给它一条 YouTube 或 Bilibili 链接，它自动拉字幕、存一份带时间戳的原始转录，再生成一份结构化的深度总结。任何支持 Skills 的 AI agent 都能用。
+> 丢给它一条 YouTube 或 Bilibili 链接，自动下载字幕/弹幕/关键帧，生成 9-10 段结构化深度总结。任何支持 Skills 的 AI agent 都能用。
 
-把链接粘进对话即可触发，无需记命令。流程：**识别平台 → 下载字幕 → 清洗 → 存原始转录 → 生成总结**。
+把链接粘进对话即可触发，无需记命令。
 
 ---
 
 ## 它做什么
 
-- **双平台**：YouTube（自动/人工字幕）+ Bilibili（需登录 cookies，自动从 Chrome 读取并缓存）。
-- **两份产物**：`<标题>.md`（带 `[mm:ss]` 时间戳的完整转录）+ `<标题>-summary.md`（结构化总结）。
-- **9 段式总结**：章节概览、总体摘要、话题章节、关键引用、新颖观点、反直觉观点、核心张力、方法论、关键数据——无内容的段落自动省略，不编造。
-- **长视频不丢信息**：转录 > 120k 字符时先做 map-reduce（40k 字符分块 + 2k 重叠），再汇总。
-- **Chain of Density 摘要**：「总体摘要」按转录长度自适应字数（`max(80, min(words/25, 400))`），经 3 轮密度迭代，而非一次成稿。
-- **离线确定性**：所有逻辑是 `SKILL.md` 里的内联 bash + python，不依赖额外服务。
-
----
-
-## 前置依赖
-
-- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) — 字幕下载核心。Skill 会在缺失时尝试 `pip install yt-dlp`，失败则提示你手动装（`pip install yt-dlp` 或 `brew install yt-dlp`）。
-- **Bilibili 专属**：需要登录态 cookies。Skill 首次会用 `yt-dlp --cookies-from-browser chrome` 从 Chrome 读取并缓存到 `~/bilibili_cookies.txt`（30 天过期自动刷新）。请确保 Chrome 已登录 B 站。
-- `python3`（清洗字幕 / 解析元数据 / 分块，均为标准库）。
+| 能力 | 说明 |
+|------|------|
+| **三模式** | 文本模式（字幕 → 9 段总结）、视觉 Quick（场景检测 → Gemini 免费分析）、视觉 Deep（GPT-5.5 一步到位，~$0.18/次） |
+| **弹幕分析** | B站专属：抓取弹幕 → 10 秒密度段聚合 → Top 8 高能时刻 → 观众情绪聚类 |
+| **场景检测** | ffmpeg 内容感知切分镜头 → 每场景抽 1 帧 → 多模态模型画面理解 |
+| **双平台** | YouTube（自动/人工字幕）+ Bilibili（AI 字幕 + 弹幕，需 cookies） |
+| **10 段总结** | 章节概览、总体摘要、话题章节、关键引用、弹幕反应、新颖观点、反直觉观点、核心张力、方法论、关键数据 |
+| **Obsidian 兼容** | frontmatter 含 wikilink、ctime/mtime、type: source，直接落 vault |
 
 ---
 
 ## 安装
 
-**方式一（推荐）· `npx skills`** — 用 [vercel-labs/skills](https://github.com/vercel-labs/skills) 一行安装（agent 与安装范围由 CLI 自动识别 / 交互选择）：
-
 ```bash
-npx skills add xiapuyang/youtube-summary
+npx skills add jialuolian-netizen/bili-youtube-summary
 ```
 
-**方式二 · `git clone`** — 直接克隆到你 agent 的 skills 目录（下例以 `~/.claude/skills/` 为例，换成你 agent 实际的 skills 路径即可）：
-
-```bash
-git clone https://github.com/xiapuyang/youtube-summary.git ~/.claude/skills/youtube-summary
-```
-
-装好后重启你的 agent，确认 skill 已加载。
+装好后重启 agent 即可。
 
 ---
 
 ## 使用
 
-直接把链接发给你的 agent，或用自然语言触发：
-
 ```
-帮我总结这个视频 https://www.youtube.com/watch?v=xxxx
+总结这个视频 https://www.bilibili.com/video/BVxxxx
 ```
 
 ```
-https://www.bilibili.com/video/BVxxxx  获取字幕
+--deep 帮我深度分析 https://www.youtube.com/watch?v=xxxx
 ```
 
 触发词：任何含 `youtube.com / youtu.be / bilibili.com / b23.tv` 的链接，或「总结这个视频」「获取字幕」「视频总结」「提取字幕」。
 
 ---
 
-## 环境变量（可选）
+## 前置依赖
 
-| 变量 | 作用 | 默认 |
-|---|---|---|
-| `YOUTUBE_SUBTITLES_DIR` | 产物输出目录 | 当前目录 `.` |
-| `YOUTUBE_SUBTITLES_SUMMARY_LANG` | 强制总结语言（`zh` / `en`） | 跟随字幕语言，否则跟随系统 `LANG` |
-| `BILIBILI_COOKIES_FILE` | Bilibili cookies 缓存路径 | `~/bilibili_cookies.txt` |
+| 依赖 | 安装 | 备注 |
+|------|------|------|
+| `yt-dlp` | `pip install yt-dlp` | 字幕/视频下载 |
+| `ffmpeg` | 通常已预装 | 场景检测 + 抽帧 |
+| `python3` | 标准库即可 | 清洗/调度 |
+| B站 cookies | Chrome 扩展 "Get cookies.txt LOCALLY" → 导出到 `~/bilibili_cookies.txt` | 约 30 天过期，见 `references/cookies-setup.md` |
 
 ---
 
-## 输出格式
+## API Key 配置
 
-产物 frontmatter 采用 **Obsidian 风格**（`[[作者]]` wikilink、`ctime/mtime`、`type: source`、`tags`），方便直接落进 Obsidian 仓库。若你不用 Obsidian，这些字段无害，可按需删改 `references/output-formats.md` 里的模板。
+> 视觉模式需要，文本模式无需。
 
-段落标题与模板（中/英双语）见 [`references/output-formats.md`](references/output-formats.md)。
+| Key | 获取方式 | 费用 | 用途 |
+|-----|---------|------|------|
+| `GEMINI_API_KEY` | https://aistudio.google.com/apikey（免费注册） | 免费 1500次/天 | `--quick` 模式 |
+| `LEIHUO_API_KEY` | 雷火大模型网关控制台 | ~$0.18/次 | `--deep` 模式 |
+
+```bash
+# Windows
+setx GEMINI_API_KEY "你的key"
+setx LEIHUO_API_KEY "你的key"
+setx LEIHUO_API_BASE "https://ai.leihuo.netease.com/v1/chat/completions"
+
+# macOS/Linux
+export GEMINI_API_KEY="你的key"
+export LEIHUO_API_KEY="你的key"
+export LEIHUO_API_BASE="https://ai.leihuo.netease.com/v1/chat/completions"
+```
+
+两个 key 都没有 → 仅文本模式可用。无字幕视频会报错提示缺少 key。
+
+---
+
+## 模式选择
+
+```
+有字幕? ──Yes──→ Text (免费，9 段总结)
+    │
+    No
+    │
+    ├── "quick/快速" → Visual Quick (Gemini 免费, ~$0.12)
+    │
+    └── "deep/深度" → Visual Deep (GPT-5.5, ~$0.18)
+```
+
+---
+
+## 输出
+
+- `{标题}.md` — 带时间戳完整转录 + 弹幕密度表（B站）
+- `{标题}-summary.md` — 9/10 段结构化深度总结
+
+Obsidian 风格 frontmatter，支持 wikilink、标签。
+
+---
+
+## 环境变量
+
+| 变量 | 作用 | 默认 |
+|------|------|------|
+| `YOUTUBE_SUBTITLES_DIR` | 产物输出目录 | `.` |
+| `GEMINI_API_KEY` | Gemini 视觉分析 | — |
+| `LEIHUO_API_KEY` | GPT-5.5 深度分析 | — |
+| `LEIHUO_API_BASE` | 雷火网关地址 | `https://ai.leihuo.netease.com/v1/chat/completions` |
+| `BILIBILI_COOKIES_FILE` | B站 cookies 路径 | `~/bilibili_cookies.txt` |
 
 ---
 
 ## License
 
-[MIT](LICENSE) © 2026 xiapuyang
+[MIT](LICENSE)
+
+## Credits
+
+Forked from [xiapuyang/youtube-summary](https://github.com/xiapuyang/youtube-summary). Extended with Windows support, visual mode, danmaku analysis, and multi-model integration.
