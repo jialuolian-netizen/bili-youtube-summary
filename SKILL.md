@@ -1,397 +1,276 @@
 ---
 name: youtube-summary
 description: >
-  Extract subtitles from YouTube or Bilibili, save raw transcript, and generate a structured summary.
-  Triggers: ANY URL containing youtube.com, youtu.be, bilibili.com, or b23.tv — use this skill
-  immediately, do NOT use fetch-content. Also triggers on: "summarize this video / get subtitles" /
-  "总结这个视频" / "帮我看看这个视频" / "获取字幕" / "视频总结" / "提取字幕".
+  Extract subtitles & frames from YouTube/Bilibili, generate structured 9-section summary.
+  Supports: text mode (subtitles → LLM) and visual mode (ffmpeg + Gemini/GPT-5.5).
+  Two visual tiers: --deep (GPT-5.5, ~$0.18) or --quick (Gemini, free).
+  Triggers: ANY URL containing youtube.com, youtu.be, bilibili.com, or b23.tv.
+  Also: "summarize this video / 总结这个视频 / 帮我看看 / 获取字幕 / 视频总结 / 提取字幕".
 ---
 
-# Video Subtitle Extractor (YouTube + Bilibili)
+# Video Summarizer (YouTube + Bilibili)
 
-Detect platform → download subtitles → clean → save raw → generate summary.
+Detect platform → download subtitles + video → scene detection → frame description → LLM summary.
 
-Supports **macOS/Linux (bash)** and **Windows (PowerShell 5.1+)** . Python scripts are cross-platform.
-
----
-
-## Step 0 — B站 Cookie Setup (One-Time)
-
-Bilibili requires login cookies. Windows Chrome cookie decryption (DPAPI) is broken in yt-dlp.
-
-**One-time setup** — do this once, then cookies work for ~30 days:
-
-1. Install Chrome extension **"Get cookies.txt LOCALLY"** from Chrome Web Store
-2. Open `bilibili.com`, log in, click extension → **Export**
-3. Save as `%USERPROFILE%\bilibili_cookies.txt` (Windows) or `~/bilibili_cookies.txt` (macOS/Linux)
-
-**Check if cookies exist and are fresh:**
-- Windows: `Test-Path "$env:USERPROFILE\bilibili_cookies.txt"`
-- Unix: `test -f ~/bilibili_cookies.txt`
-
-If cookies are missing or >30 days old, tell user to re-export from the extension.
-
-The cookies path is `${BILIBILI_COOKIES_FILE:-$HOME/bilibili_cookies.txt}` on Unix, `$env:USERPROFILE\bilibili_cookies.txt` on Windows.
+Supports **macOS/Linux (bash)** and **Windows (PowerShell 5.1+)** .
 
 ---
 
-## Step 1 — Ensure yt-dlp is available
+## Execution Modes
 
-**Unix (bash):**
+| Mode | Trigger | Pipeline | Cost | Use Case |
+|------|---------|----------|------|----------|
+| **Text** (default, when subtitles exist) | `总结这个视频 <URL>` | Subs → clean → LLM 9-section summary | Free (local LLM) | Videos with spoken content |
+| **Visual Deep** | `--deep` or explicit request | Scene detect → GPT-5.5 direct 9-section | ~$0.18/video | Design analysis, inspiration |
+| **Visual Quick** | `--quick` or default when no subs | Scene detect → Gemini describe + LLM summary | Free | Quick browsing, bulk scanning |
+
+**Auto-detection**: If subtitles exist → Text mode. If no subtitles → Visual Quick mode. Add `--deep` to force GPT-5.5.
+
+---
+
+## Prerequisites (One-Time Setup)
+
+### Required Tools
+
+- `yt-dlp` — subtitle/video download: `pip install yt-dlp`
+- `ffmpeg` — scene detection + frame extraction (usually pre-installed)
+- `python3` — orchestration scripts
+
+### B站 Cookies (Bilibili only)
+
+B站 needs login cookies. On Windows, Chrome DPAPI decryption is broken in yt-dlp.
+
+**Setup**: Install Chrome extension **"Get cookies.txt LOCALLY"** , open bilibili.com, Export → save as `%USERPROFILE%\bilibili_cookies.txt` (Windows) or `~/bilibili_cookies.txt` (Unix). Re-export every ~30 days.
+
+See `references/cookies-setup.md` for detailed steps.
+
+### API Keys
+
+For visual analysis, configure environment variables (or hardcode in script):
+
 ```bash
-if ! command -v yt-dlp &>/dev/null; then
-  echo "yt-dlp not found, installing..."
-  pip install -q yt-dlp || pip3 install -q yt-dlp
-fi
-yt-dlp -U --quiet 2>/dev/null || true
-```
+# Gemini (free, 1500 req/day, for quick mode)
+# Get key at: https://aistudio.google.com/apikey
+GEMINI_API_KEY="your-gemini-key-here"
 
-**Windows (PowerShell):**
-```powershell
-if (-not (Get-Command yt-dlp -ErrorAction SilentlyContinue)) {
-    pip install -q yt-dlp
-}
+# Leihuo GPT-5.5 (for deep mode, ~$0.18/video)
+# Get key + base URL from your Leihuo gateway console
+LEIHUO_API_KEY="your-leihuo-key-here"
+LEIHUO_API_BASE="https://ai.leihuo.netease.com/v1/chat/completions"
 ```
-
-If installation fails, stop and tell the user to install yt-dlp manually (`pip install yt-dlp` or `brew install yt-dlp`).
 
 ---
 
-## Step 2 — Detect platform and download subtitles
+## Full Pipeline
 
-Detect whether the URL is Bilibili or YouTube, then use the appropriate strategy.
+### Step 1 — Download Subtitles + Low-Res Video
 
-**Unix (bash):**
-```bash
-URL="<user-provided URL>"
-TMPDIR=$(mktemp -d)
-SUB_FILE=""
-SUBTITLE_LANG=""
-
-if echo "$URL" | grep -qE '(bilibili\.com|b23\.tv)'; then
-  PLATFORM="bilibili"
-  SITE_NAME="Bilibili"
-  SITE_DOMAIN="bilibili.com"
-else
-  PLATFORM="youtube"
-  SITE_NAME="YouTube"
-  SITE_DOMAIN="youtube.com"
-fi
-```
-
-**Windows (PowerShell):**
 ```powershell
+# Windows PowerShell
 $URL = "<user-provided URL>"
-$TMPDIR = Join-Path $env:TEMP "yt_summary_$(Get-Random)"
-New-Item -ItemType Directory -Path $TMPDIR -Force | Out-Null
+$BV = ($URL -split '/')[-1] -replace '\?.*',''
+$TMP = Join-Path $env:TEMP "yt_summary_$BV"
+New-Item -ItemType Directory -Path $TMP -Force | Out-Null
 
+# Detect platform
 if ($URL -match 'bilibili\.com|b23\.tv') {
     $PLATFORM = "bilibili"
-    $SITE_NAME = "Bilibili"
-    $SITE_DOMAIN = "bilibili.com"
+    $COOKIES = "--cookies $env:USERPROFILE\bilibili_cookies.txt"
 } else {
     $PLATFORM = "youtube"
-    $SITE_NAME = "YouTube"
-    $SITE_DOMAIN = "youtube.com"
+    $COOKIES = ""
 }
-```
 
-### Bilibili branch — Unix
+# Download subtitles (try ai-zh then zh-Hans then zh then en)
+$LANG = "ai-zh"
+yt-dlp --no-update $COOKIES.Split(' ') --write-subs --sub-langs $LANG --skip-download -o "$TMP\subs" $URL 2>&1 | Out-Null
+$SUB = Get-ChildItem $TMP -Filter "*.$LANG.*" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
 
-```bash
-if [ "$PLATFORM" = "bilibili" ]; then
-  BILI_COOKIES="${BILIBILI_COOKIES_FILE:-$HOME/bilibili_cookies.txt}"
-  COOKIE_ARGS="--cookies $BILI_COOKIES"
+# Fallback languages if ai-zh not available
+if (-not $SUB) {
+    foreach ($fallback in @('zh-Hans', 'zh', 'en')) {
+        yt-dlp --no-update $COOKIES.Split(' ') --write-subs --sub-langs $fallback --skip-download -o "$TMP\subs" $URL 2>&1 | Out-Null
+        $SUB = Get-ChildItem $TMP -Filter "*.$fallback.*" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if ($SUB) { $LANG = $fallback; break }
+    }
+}
 
-  # List available subtitle langs
-  LIST_OUTPUT=$(yt-dlp --no-update --list-subs $COOKIE_ARGS "$URL" 2>&1)
-  if echo "$LIST_OUTPUT" | grep -qi "login\|not logged\|需要登录\|please log"; then
-    echo "❌ Bilibili cookies expired. Re-export from Get cookies.txt extension."
-    rm -rf "$TMPDIR"; exit 1
-  fi
-  AVAIL_LANGS=$(echo "$LIST_OUTPUT" | awk '/^[a-z]/{print $1}' | grep -v "^Language$")
-
-  for lang in ai-zh zh-Hans zh-CN zh en; do
-    if echo "$AVAIL_LANGS" | grep -q "^${lang}$"; then
-      yt-dlp --no-update --write-subs --sub-langs "$lang" --skip-download --retries 3 \
-        -o "$TMPDIR/bili_%(id)s" $COOKIE_ARGS "$URL" 2>/dev/null
-      SUB_FILE=$(find "$TMPDIR" -maxdepth 1 -name "*.${lang}.*" 2>/dev/null | head -1)
-      if [ -n "$SUB_FILE" ]; then SUBTITLE_LANG="$lang"; break; fi
-    fi
-  done
-fi
-```
-
-### Bilibili branch — Windows
-
-```powershell
+# Get metadata via B站 API or yt-dlp
 if ($PLATFORM -eq "bilibili") {
-    $BILI_COOKIES = "$env:USERPROFILE\bilibili_cookies.txt"
-    if (-not (Test-Path $BILI_COOKIES)) {
-        Write-Host "❌ No Bilibili cookies found. Please run Step 0 setup first."; exit 1
-    }
-    $COOKIE_ARGS = "--cookies `"$BILI_COOKIES`""
-
-    # List available subtitles
-    $listOutput = yt-dlp --no-update --list-subs --cookies $BILI_COOKIES $URL 2>&1
-    if ($listOutput -match 'login|not logged|需要登录') {
-        Write-Host "❌ Cookies expired. Re-export from Get cookies.txt extension."; exit 1
-    }
-    # Extract available language codes from --list-subs output
-    $availLines = ($listOutput -split "`n" | Where-Object { $_ -match '^\s*(ai-zh|zh-|en|danmaku)\s' })
-    $availLangs = ($availLines | ForEach-Object { ($_ -split '\s+')[0] }) -join ' '
-
-    foreach ($lang in @('ai-zh', 'zh-Hans', 'zh-CN', 'zh', 'en')) {
-        if ($availLangs -match $lang) {
-            yt-dlp --no-update --write-subs --sub-langs $lang --skip-download --retries 3 `
-                -o "$TMPDIR\bili_%(id)s" $COOKIE_ARGS.Split(' ') $URL 2>&1 | Out-Null
-            $SUB_FILE = Get-ChildItem $TMPDIR -Filter "*.$lang.*" | Select-Object -First 1 -ExpandProperty FullName
-            if ($SUB_FILE) { $SUBTITLE_LANG = $lang; break }
-        }
-    }
+    $TITLE = (Invoke-RestMethod "https://api.bilibili.com/x/web-interface/view?bvid=$BV").data.title
+    $UPLOADER = (Invoke-RestMethod "https://api.bilibili.com/x/web-interface/view?bvid=$BV").data.owner.name
+} else {
+    $meta = yt-dlp --no-update --dump-json $URL 2>$null | ConvertFrom-Json
+    $TITLE = $meta.title; $UPLOADER = $meta.uploader
 }
+
+# Download low-res video (always needed for scene detection)
+yt-dlp --no-update $COOKIES.Split(' ') -f "worst[height<=480]" -o "$TMP\video.%(ext)s" $URL 2>&1
+$VIDEO = Get-ChildItem $TMP -Filter "video.*" | Select-Object -First 1 -ExpandProperty FullName
 ```
 
-### YouTube branch — Unix
-
-```bash
-if [ "$PLATFORM" = "youtube" ]; then
-  for lang in zh-Hans zh-CN zh en; do
-    yt-dlp --no-update --write-subs --write-auto-subs --sub-langs "$lang" --skip-download \
-      --sub-format vtt --retries 3 --sleep-requests 1 -o "$TMPDIR/yt_%(id)s" "$URL" 2>/dev/null
-    SUB_FILE=$(find "$TMPDIR" -maxdepth 1 -name "*.${lang}.vtt" 2>/dev/null | head -1)
-    if [ -n "$SUB_FILE" ]; then SUBTITLE_LANG="$lang"; break; fi
-    sleep 1
-  done
-fi
-```
-
-### YouTube branch — Windows
-
-```powershell
-if ($PLATFORM -eq "youtube") {
-    foreach ($lang in @('zh-Hans', 'zh-CN', 'zh', 'en')) {
-        yt-dlp --no-update --write-subs --write-auto-subs --sub-langs $lang --skip-download `
-            --sub-format vtt --retries 3 --sleep-requests 1 -o "$TMPDIR\yt_%(id)s" $URL 2>&1 | Out-Null
-        $SUB_FILE = Get-ChildItem $TMPDIR -Filter "*.$lang.vtt" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-        if ($SUB_FILE) { $SUBTITLE_LANG = $lang; break }
-        Start-Sleep -Seconds 1
-    }
-}
-```
-
-### Fail if no subtitles
-
-**Unix:** `if [ -z "$SUB_FILE" ]; then echo "No subtitles found."; rm -rf "$TMPDIR"; exit 1; fi`
-
-**Windows:**
-```powershell
-if (-not $SUB_FILE) { Write-Host "No subtitles found."; Remove-Item -Recurse -Force $TMPDIR -ErrorAction SilentlyContinue; exit 1 }
-```
-
----
-
-## Step 3 — Clean subtitle file → plain text + timestamped text
-
-Cross-platform Python script. Write to `cleaned.txt` (no timestamps, for LLM) and `timestamped.txt` (`[mm:ss]` format):
+### Step 2 — Scene Detection + Frame Extraction
 
 ```python
-import sys, html, re, os
+# scene_detect.py (cross-platform)
+import subprocess, os, re
 
-sub_file, tmpdir = sys.argv[1], sys.argv[2]
+TMP = os.environ['TMP_DIR']  # set by caller
+VIDEO = os.path.join(TMP, 'video.mp4')
+FRAMES = os.path.join(TMP, 'frames')
+os.makedirs(FRAMES, exist_ok=True)
 
-def parse_time(t):
-    t = t.strip().replace(',', '.')
-    parts = t.split(':')
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    return int(parts[0]) * 60 + float(parts[1])
+# ffmpeg scene detection: sensitivity 0.4
+result = subprocess.run([
+    'ffmpeg', '-i', VIDEO,
+    '-vf', "select='gt(scene\\,0.4)',showinfo",
+    '-vsync', 'vfr', '-f', 'null', '-'
+], capture_output=True, text=True)
 
-def fmt(secs):
-    secs = int(secs)
-    return f"[{secs // 60:02d}:{secs % 60:02d}]"
+scene_times = []
+for line in result.stderr.split('\n'):
+    m = re.search(r'pts_time:([\d.]+)', line)
+    if m and float(m.group(1)) > 0:
+        scene_times.append(float(m.group(1)))
 
-with open(sub_file, encoding='utf-8') as f:
-    lines = f.read().splitlines()
+# Dedup close scenes (< 1.5s apart), cap at 12
+filtered = []
+for t in scene_times:
+    if not filtered or t - filtered[-1] >= 1.5:
+        filtered.append(t)
+filtered = filtered[:12]
 
-cleaned_out = []
-ts_out = []
-seen = set()
-current_secs = 0
-ext = os.path.splitext(sub_file)[1].lower()
+# Extract one frame per scene
+for i, t in enumerate(filtered):
+    out = os.path.join(FRAMES, f'scene_{i:02d}.jpg')
+    subprocess.run(['ffmpeg', '-y', '-ss', str(t), '-i', VIDEO,
+                    '-vframes', '1', '-q:v', '2', out], capture_output=True)
 
-i = 0
-while i < len(lines):
-    line = lines[i].strip()
-    if ext == '.srt':
-        if not line or re.match(r'^\d+$', line):
-            i += 1; continue
-        m = re.match(r'^(\d{2}:\d{2}:\d{2}[,\.]\d+) -->', line)
-        if m:
-            current_secs = parse_time(m.group(1))
-            i += 1; continue
-    else:  # vtt
-        if not line or line.startswith('WEBVTT') or line.startswith('NOTE') \
-                or line.startswith('Kind:') or line.startswith('Language:'):
-            i += 1; continue
-        m = re.match(r'^([\d:\.]+) -->', line)
-        if m:
-            current_secs = parse_time(m.group(1))
-            i += 1; continue
-    text = html.unescape(re.sub(r'<[^>]+>', '', line)).strip()
-    if text and text not in seen:
-        seen.add(text)
-        cleaned_out.append(text)
-        ts_out.append(f"{fmt(current_secs)} {text}")
-    i += 1
-
-with open(os.path.join(tmpdir, 'cleaned.txt'), 'w', encoding='utf-8') as f:
-    f.write('\n\n'.join(cleaned_out) + '\n')
-with open(os.path.join(tmpdir, 'timestamped.txt'), 'w', encoding='utf-8') as f:
-    f.write('  \n'.join(ts_out) + '\n')
-
-print(f"cleaned: {len(cleaned_out)} lines, {sum(len(l) for l in cleaned_out)} chars")
+# Print scene times for next step
+for i, t in enumerate(filtered):
+    print(f"SCENE|{i}|{t}|{int(t//60)}:{int(t%60):02d}")
 ```
 
-**Windows invocation:**
-```powershell
-python -c "<paste the script above, with $SUB_FILE and $TMPDIR substituted>" 
-# OR save as temp script and run:
-# python ./clean_subs.py $SUB_FILE $TMPDIR
+### Step 3 — Generate Summary
+
+Choose mode based on subtitle availability and user preference:
+
+#### Mode A: Text (subtitles exist)
+
+Clean the subtitle, read `references/output-formats.md` for templates, then generate a 9-section summary using the transcript as input. Follow the Chain of Density rules and attribution policy.
+
+#### Mode B: Visual Quick (no subs, default) — Gemini 2.5 Flash
+
+```python
+# Merge scene detection script with Gemini API call
+import base64, json, urllib.request, os
+
+API_KEY = os.environ.get('GEMINI_API_KEY')
+FRAMES = os.path.join(TMP, 'frames')
+frame_files = sorted([f for f in os.listdir(FRAMES) if f.endswith('.jpg')])
+
+# Build Gemini request with all frames
+parts = [{"text": f"Describe each frame from a game video. Title: {TITLE}. For each frame: location type, season/weather, architecture style, composition, visual mood. Reply in Chinese, one paragraph per frame."}]
+for fname in frame_files:
+    with open(os.path.join(FRAMES, fname), 'rb') as f:
+        b64 = base64.b64encode(f.read()).decode('utf-8')
+    parts.append({"text": f"Frame {fname}:"})
+    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+
+url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
+payload = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096}}
+req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json"})
+
+with urllib.request.urlopen(req, timeout=180) as resp:
+    gemini_result = json.loads(resp.read().decode('utf-8'))
+frame_descriptions = gemini_result["candidates"][0]["content"]["parts"][0]["text"]
+
+# Then pass frame_descriptions to GPT-5.5 or local LLM for 9-section summary
+# Use the prompt template from Step 3C below
 ```
 
----
+#### Mode C: Visual Deep (--deep or explicit) — GPT-5.5 Direct
 
-## Step 4 — Resolve output directory and filename
+```python
+import base64, json, urllib.request, os
 
-**Unix:**
-```bash
-OUTPUT_DIR="${YOUTUBE_SUBTITLES_DIR:-.}"
-mkdir -p "$OUTPUT_DIR"
-SLUG=$(echo "<title>" | python3 -c "import sys; t=sys.stdin.read().strip(); print(t.replace('/','').replace(':','')[:100])")
+LEIHUO_KEY = os.environ.get('LEIHUO_API_KEY')
+LEIHUO_URL = os.environ.get('LEIHUO_API_BASE', 'https://ai.leihuo.netease.com/v1/chat/completions')
+
+# Build vision message with all frames (GPT-5.5 supports image_url)
+content = [{"type": "text", "text": f"Analyze these keyframes from a game video titled '{TITLE}' by {UPLOADER}. For each frame describe: location, season, architecture, composition. Then generate a 9-section summary: 章节概览, 总体摘要, 话题章节, 新颖观点, 反直觉观点, 核心张力, 方法论, 关键数据. Reply in Chinese."}]
+for fname in sorted(os.listdir(FRAMES)):
+    with open(os.path.join(FRAMES, fname), 'rb') as f:
+        b64 = base64.b64encode(f.read()).decode('utf-8')
+    content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+payload = {
+    "model": "gpt-5.5",
+    "messages": [{"role": "user", "content": content}],
+    "max_tokens": 6000, "temperature": 0.5
+}
+req = urllib.request.Request(LEIHUO_URL, data=json.dumps(payload).encode('utf-8'),
+    headers={"Authorization": f"Bearer {LEIHUO_KEY}", "Content-Type": "application/json"})
+with urllib.request.urlopen(req, timeout=180) as resp:
+    result = json.loads(resp.read().decode('utf-8'))
+summary = result["choices"][0]["message"]["content"]
+# Cost: input=~2000 completion=~3500 → ~$0.18
 ```
 
-**Windows:**
-```powershell
-$OUTPUT_DIR = if ($env:YOUTUBE_SUBTITLES_DIR) { $env:YOUTUBE_SUBTITLES_DIR } else { "." }
-New-Item -ItemType Directory -Path $OUTPUT_DIR -Force | Out-Null
-$SLUG = ($TITLE -replace '[/:]', '') -replace '[\\*?"<>|]', ''; if ($SLUG.Length -gt 100) { $SLUG = $SLUG.Substring(0,100) }
+#### 9-Section Summary Prompt Template
+
+All modes use this structure. Read `references/output-formats.md` for exact section headers.
+
 ```
+Analyze this video. Title: {TITLE}, Uploader: {UPLOADER}.
 
----
+{Subtitle transcript OR frame descriptions}
 
-## Step 5 — Fetch video metadata
+Generate a 9-section structured summary in Chinese:
+1. 章节概览 — timestamped chapter table
+2. 总体摘要 — 3-5 sentence synthesis + 3-5 key highlights (Chain of Density)
+3. 话题章节 — 4-8 major topics, each 3-5 bullet points (2-3 sentences each)
+4. 关键引用 — verbatim quotes in blockquotes (skip if no spoken content)
+5. 新颖观点 — non-mainstream insights, 2-3 sentences each
+6. 反直觉观点 — "Common belief: X → Actual: Y" format
+7. 核心张力 — opposing forces, 2-3 sentences per side
+8. 方法论 — reusable design frameworks, sub-bullets for steps
+9. 关键数据 — specific numbers only, never fabricate
 
-**Windows (PowerShell) — reads metadata via yt-dlp --dump-json:**
-```powershell
-$metaJson = yt-dlp --no-update --dump-json --no-playlist $COOKIE_ARGS.Split(' ') $URL 2>$null | ConvertFrom-Json
-$TITLE = $metaJson.title
-$CHANNEL = $metaJson.uploader
-$DURATION = $metaJson.duration_string
-$DATE = $metaJson.upload_date
-$DESC = if ($metaJson.description) { ($metaJson.description -split '\n\n')[0] -replace '\n',' ' } else { '' }
-if ($DESC.Length -gt 300) { $DESC = $DESC.Substring(0,300) }
-$CHAPTERS = if ($metaJson.chapters) {
-    ($metaJson.chapters | ForEach-Object {
-        $m = [int]($_.start_time / 60); $s = [int]($_.start_time % 60)
-        "  - `"${m}:${s.ToString('00')} $($_.title)`""
-    }) -join "`n"
-} else { '' }
-```
+Tags: #关卡设计 #场景叙事 #{game_name}
 
-For Unix, use the bash heredoc version from the original skill (see git history).
-
----
-
-## Step 6 — Save raw transcript
-
-Write `$OUTPUT_DIR/$SLUG.md` with Obsidian-style frontmatter + timestamped transcript.
-
-**Frontmatter template:**
-```yaml
----
-title: "<title>"
-source: "<URL>"
-author:
-  - "[[<channel>]]"
-published: "<YYYYMMDD>"
-description: "<DESCRIPTION>"
-tags:
-  - "<PLATFORM>"
-ctime: "<NOW>"
-mtime: "<NOW>"
-words: "<WORDS>"
-site: "<SITE_NAME>"
-domain: "<SITE_DOMAIN>"
-channel: "<channel>"
-duration: "<duration>"
-subtitle_lang: "<SUBTITLE_LANG>"
-chapters:
-<CHAPTERS or empty>
-type: "source"
----
-```
-
-Append full `timestamped.txt` content as the body. Write with Python to ensure UTF-8 encoding:
-
-**Windows:**
-```powershell
-$NOW = Get-Date -Format "yyyy-MM-ddTHH:mm"
-$WORDS = (Get-Content "$TMPDIR\timestamped.txt" | Measure-Object -Word).Words
-# Use Python to write with proper UTF-8
-python -c "
-import sys, io; sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-title = '$($TITLE -replace "'","''")'
-# ... construct frontmatter + append timestamped.txt content
-"
+Omit any section without relevant content. Never fabricate. Voice: state ideas directly, no "X says/believes" prefixes.
 ```
 
 ---
 
-## Step 7 — Validate transcript and check length
+## Step 4 — Save Output
 
-If `< 100` chars: stop — subtitle was empty.
-If `≤ 120000`: use full cleaned.txt as summary input.
-If `> 120000`: run Step 8 map-reduce first.
+Save two files to the output directory (default: current directory, or `YOUTUBE_SUBTITLES_DIR`):
 
----
+1. `{title}.md` — full timestamped transcript (if subtitles exist)
+2. `{title}-summary.md` — 9-section structured summary (always generated)
 
-## Step 8 — Map-reduce for long transcripts (> 120k only)
-
-Split into overlapping chunks (~40k chars, 2k overlap). Extract structured notes per chunk.
-(Cross-platform Python — original SKILL.md script unchanged.)
+Obsidian-style frontmatter with `title`, `source`, `author`, `published`, `tags`, `type: source`.
 
 ---
 
-## Step 9 — Generate summary (LLM-driven)
+## Quick Reference: When to Use Which Mode
 
-Read `references/output-formats.md` for exact templates. Generate 9-section summary:
-
-1. **Chapter Overview / 章节概览** — timestamped table
-2. **Overall Summary / 总体摘要** — Chain of Density (3 iterations)
-3. **Topic Chapters / 话题章节** — 4-8 major topics
-4. **Key Quotes / 关键引用** — 10-15 verbatim blockquotes
-5. **Novel Ideas / 新颖观点** — fresh, non-mainstream ideas
-6. **Counter-intuitive Views / 反直觉观点** — common belief → actual claim format
-7. **Core Tensions / 核心张力** — opposing forces
-8. **Methodology / 方法论** — frameworks, heuristics
-9. **Key Data / 关键数据** — specific numbers only
-
-Voice: No attribution prefixes. Every bullet 2-3 sentences minimum.
-Omit sections with no relevant content.
-
-Write summary to `$OUTPUT_DIR/$SLUG-summary.md`.
-
----
-
-## Step 10 — Clean up
-
-**Windows:**
-```powershell
-Remove-Item -Recurse -Force $TMPDIR -ErrorAction SilentlyContinue
+```
+Has subtitles? ──Yes──→ Text (local LLM, free, 9-section summary)
+     │
+     No
+     │
+     ├── "fast/quick/浏览" → Visual Quick (Gemini free → GPT-5.5 summary ~$0.12)
+     │
+     └── "deep/detailed/深度" → Visual Deep (GPT-5.5 direct, ~$0.18)
 ```
 
-Report output paths: `$SLUG.md` and `$SLUG-summary.md`.
+Cost breakdown per video:
+- Text mode: $0 (local)
+- Visual Quick: $0.12 (Gemini free + GPT-5.5 for final summary)
+- Visual Deep: $0.18 (GPT-5.5 all-in-one)
 
 ---
 
@@ -399,10 +278,12 @@ Report output paths: `$SLUG.md` and `$SLUG-summary.md`.
 
 | Error | Action |
 |-------|--------|
-| `yt-dlp` not found | Tell user: `pip install yt-dlp` |
-| B站 cookies missing | Tell user: run Step 0 — install "Get cookies.txt LOCALLY" Chrome extension, export from bilibili.com → `~/bilibili_cookies.txt` |
-| B站 cookies expired (login error) | Tell user: re-export cookies from the extension (Step 0) |
-| No subtitles found | Stop. Suggest checking video page. |
-| `cleaned.txt` < 100 chars | Stop. Subtitle empty or disabled. |
-| `--dump-json` fails | Continue without metadata. Use empty strings. |
-| Transcript > 120k + map-reduce empty | Stop. Show first 200 chars for diagnosis. |
+| yt-dlp not found | Tell user: `pip install yt-dlp` |
+| B站 cookies missing | Tell user: run Step 0 in `references/cookies-setup.md` |
+| B站 cookies expired | Tell user: re-export from "Get cookies.txt LOCALLY" |
+| No subtitles + no video downloaded | Both modes failed. Check URL or network. |
+| No subtitles found | Auto-switch to Visual Quick mode (default) |
+| Gemini 429 (rate limit) | Tell user: free quota exhausted, wait or switch to `--deep` |
+| GPT-5.5 error | Retry once; if persists, fall back to Visual Quick |
+| Scene detection yields 0 frames | Use fixed-interval fallback: extract 1 frame every 10% of duration |
+| ffmpeg not found | Install ffmpeg: `winget install ffmpeg` (Win) or `brew install ffmpeg` (Mac) |
