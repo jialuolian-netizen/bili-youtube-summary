@@ -1,84 +1,138 @@
 ---
 name: bili-youtube-summary
 description: >
-  Extract subtitles, danmaku & frames from YouTube/Bilibili, generate structured 9-section summary.
-  Supports: text mode (subtitles → LLM) and visual mode (ffmpeg + Gemini/GPT-5.5).
-  Two visual tiers: --deep (GPT-5.5, ~$0.18) or --quick (Gemini, free).
+  Extract subtitles, danmaku & frames from YouTube/Bilibili, generate structured summary.
+  Three output tiers: L1 overview (速览), L2 9-section deep analysis (深度), L2.1 +design dimensions (设计).
+  Visual mode via ffmpeg + Gemini (free) or GPT-5.5 (~$0.18).
   Triggers: ANY URL containing youtube.com, youtu.be, bilibili.com, or b23.tv.
-  Also: "summarize this video / 总结这个视频 / 帮我看看 / 获取字幕 / 视频总结 / 提取字幕".
+  Also: "总结/看看/分析/设计/灵感/拆解/竞品/启发 这个视频".
 ---
 
 # Video Summarizer (YouTube + Bilibili)
 
-Detect platform → download subtitles + video → scene detection → frame description → LLM summary.
-
-Supports **macOS/Linux (bash)** and **Windows (PowerShell 5.1+)** .
+Detect platform → download subtitles + danmaku + video → scene detection → LLM summary.
 
 ---
 
-## Execution Modes
+## Intent Routing — 先判断输出层级
 
-| Mode | Trigger | Pipeline | Cost | Use Case |
-|------|---------|----------|------|----------|
-| **Text** (default, when subtitles exist) | `总结这个视频 <URL>` | Subs → clean → LLM 9-section summary | Free (local LLM) | Videos with spoken content |
-| **Visual Deep** | `--deep` or explicit request | Scene detect → GPT-5.5 direct 9-section | ~$0.18/video | Design analysis, inspiration |
-| **Visual Quick** | `--quick` or default when no subs | Scene detect → Gemini describe + LLM summary | Free | Quick browsing, bulk scanning |
+**在开始任何处理前，先根据用户措辞确定输出层级：**
 
-**Auto-detection**: If subtitles exist → Text mode. If no subtitles → Visual Quick mode. Add `--deep` to force GPT-5.5.
+| 层级 | 触发词 | 输出内容 | 适用场景 |
+|------|--------|---------|---------|
+| **L1 速览** | `总结` `看看` `讲了什么` `获取字幕` `提取字幕` | 标题 + 时间轴 + 关键观察 + 弹幕高光 + 证据档位 | 快速扫片、大量浏览 |
+| **L2 深度** | `深度` `详细` `全面总结` `--deep` | L1 + 9 段结构化总结 | 单视频深入理解 |
+| **L2.1 设计** | `设计` `灵感` `拆解` `竞品` `启发` `落地` `策划` | L2 + 10 维设计注意点 + 参考知识 + 风险清单 | 策划视角的竞品分析和设计参考 |
 
----
-
-## Prerequisites (One-Time Setup)
-
-### Required Tools
-
-- `yt-dlp` — subtitle/video download: `pip install yt-dlp`
-- `ffmpeg` — scene detection + frame extraction (usually pre-installed)
-- `python3` — orchestration scripts
-
-### B站 Cookies (Bilibili only)
-
-B站 needs login cookies. On Windows, Chrome DPAPI decryption is broken in yt-dlp.
-
-**Setup**: Install Chrome extension **"Get cookies.txt LOCALLY"** , open bilibili.com, Export → save as `%USERPROFILE%\bilibili_cookies.txt` (Windows) or `~/bilibili_cookies.txt` (Unix). Re-export every ~30 days.
-
-See `references/cookies-setup.md` for detailed steps.
-
-### API Keys
-
-> ⚠️ **首次使用前必须配置，否则视觉模式不可用。** 文本模式（有字幕的视频）无需 API key。
-
-**Gemini API Key**（免费，1500 次/天，用于 `--quick` 快速视觉模式）：
-1. 访问 https://aistudio.google.com/apikey
-2. 用 Google 账号登录（没有则注册一个，免费）
-3. 点击 "Create API Key" → 复制 key
-4. 设为环境变量: `setx GEMINI_API_KEY "你的key"` (Windows) 或 `export GEMINI_API_KEY="你的key"` (Mac)
-
-**雷火网关 Key**（企业付费，~$0.18/次，用于 `--deep` 深度视觉模式）：
-1. 确认你已接入雷火大模型网关（公司内部服务，非雷火员工请跳过）
-2. 在网关控制台找到 API Key 和 Base URL
-3. 设为环境变量: `setx LEIHUO_API_KEY "你的key"` + `setx LEIHUO_API_BASE "https://ai.leihuo.netease.com/v1/chat/completions"`
-
-**无 Key 时的降级行为**：
-- 有 Gemini key → `--quick` 模式可用
-- 有雷火 key → `--deep` 模式可用
-- 两个都没有 → 仅文本模式可用（有字幕的视频），无字幕视频会报错提示缺少 key
-- 同事间可共用 key（Gemini 有每日额度上限，建议各自注册）
+**默认规则**：用户只说"总结"且无深度/设计关键词 → L1。包含视频链接且无任何意图词 → L1。
 
 ---
 
-## Full Pipeline
+## Evidence Tier — 证据档位
 
-### Step 1 — Download Subtitles + Low-Res Video
+每个输出必须标注证据档位，让读者知道结论的可靠程度：
+
+| 档位 | 条件 | 示例标注 |
+|------|------|---------|
+| **A** | 完整视频 + 字幕 + 多帧画面 | `[证据: A 档 — 完整视频+字幕+12帧]` |
+| **B** | 低清视频 + 封面/标题/弹幕，画质有限 | `[证据: B 档 — 480p视频+弹幕]` |
+| **C** | 仅标题/封面/元数据 | `[证据: C 档 — 仅元数据]` |
+| **D** | 链接不可访问 | `[证据: D 档 — 需本地文件]` |
+
+---
+
+## Output Templates
+
+### L1 速览
+
+```markdown
+**[证据: X 档 — 具体说明]**
+
+**{标题}**
+UP主: {作者} | 时长: {时长} | 播放: {播放量}
+
+**时间轴速览**
+- 00:00-XX:XX：...
+- XX:XX-XX:XX：...
+
+**关键观察**
+- 画面确认：...
+- 字幕/口播：...
+
+{弹幕高光 — B站专属：Top 5 密度段 + 代表弹幕}
+
+**不确定项**
+- ...
+```
+
+### L2 深度
+
+L1 全部内容 + 以下 9 段：
+
+```markdown
+## 章节概览
+| 时间 | 章节 | 内容 |
+## 总体摘要
+(Chain of Density, 3-5句 + 3-5亮点)
+## 话题章节
+(4-8 话题, 每话题 3-5 条 2-3 句)
+## 关键引用
+(口播原文 blockquote, 跳过无口播视频)
+## 弹幕反应
+(B站: 密度段 + 情绪聚类 + 代表弹幕)
+## 新颖观点
+## 反直觉观点
+(Common belief → Actual claim 格式)
+## 核心张力
+(对立力量, 2-3句/面)
+## 方法论
+(可复用框架)
+## 关键数据
+(仅精确数字, 不编造)
+```
+
+### L2.1 设计
+
+L2 全部内容 + 以下 3 段（从 10 维中选 3-5 个最相关的，每节绑定视频画面证据）：
+
+```markdown
+## 和游戏设计相关的注意点
+从以下维度选 3-5 个，每个 2-3 句，绑定视频中的具体观察：
+
+| 维度 | 关注点 |
+|------|--------|
+| 玩法价值 | 动机、循环、目标 |
+| 交互成本 | 入口、层级、误触、学习成本 |
+| 表现质量 | 动作、镜头、灯光、音效、氛围 |
+| NPC/世界参与 | 动态行为、环境反馈、生活感 |
+| 社交传播 | 截图、录制、滤镜、UGC传播点 |
+| 边界规则 | 打断、碰撞、穿模、遮挡、多人入镜 |
+| 技术风险 | 性能、LOD、移动端、联网同步 |
+| 运营内容 | 打卡点、活动模板、节日主题 |
+| 可复用资产 | 动作/镜头/UI 能否沉淀为工具链 |
+| 负反馈控制 | 撤销、跳过、关闭、屏蔽 |
+
+## 可供参考的知识
+从视频观察延伸出的设计模式、检查清单，不是直接方案。做成"可参考的知识点/检查项"。
+
+## 风险与待验证
+不能确认的推测、画质限制导致的模糊判断、需要进一步调研的问题。
+```
+
+---
+
+## Pipeline (Data Extraction)
+
+以下 Steps 1-3 为数据提取，所有层级共用。Step 4 按层级选择输出模板。
+
+### Step 1 — Download Subtitles + Danmaku + Low-Res Video
 
 ```powershell
-# Windows PowerShell
 $URL = "<user-provided URL>"
 $BV = ($URL -split '/')[-1] -replace '\?.*',''
 $TMP = Join-Path $env:TEMP "yt_summary_$BV"
 New-Item -ItemType Directory -Path $TMP -Force | Out-Null
 
-# Detect platform
 if ($URL -match 'bilibili\.com|b23\.tv') {
     $PLATFORM = "bilibili"
     $COOKIES = "--cookies $env:USERPROFILE\bilibili_cookies.txt"
@@ -87,12 +141,10 @@ if ($URL -match 'bilibili\.com|b23\.tv') {
     $COOKIES = ""
 }
 
-# Download subtitles (try ai-zh then zh-Hans then zh then en)
+# Subtitles
 $LANG = "ai-zh"
 yt-dlp --no-update $COOKIES.Split(' ') --write-subs --sub-langs $LANG --skip-download -o "$TMP\subs" $URL 2>&1 | Out-Null
 $SUB = Get-ChildItem $TMP -Filter "*.$LANG.*" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-
-# Fallback languages if ai-zh not available
 if (-not $SUB) {
     foreach ($fallback in @('zh-Hans', 'zh', 'en')) {
         yt-dlp --no-update $COOKIES.Split(' ') --write-subs --sub-langs $fallback --skip-download -o "$TMP\subs" $URL 2>&1 | Out-Null
@@ -101,67 +153,54 @@ if (-not $SUB) {
     }
 }
 
-# Get metadata via B站 API or yt-dlp
+# Metadata + danmaku
 if ($PLATFORM -eq "bilibili") {
     $META = Invoke-RestMethod "https://api.bilibili.com/x/web-interface/view?bvid=$BV"
     $TITLE = $META.data.title
     $UPLOADER = $META.data.owner.name
     $CID = $META.data.cid
     $DM_COUNT = $META.data.stat.danmaku
+    if ($CID) {
+        $DM_RAW = (Invoke-WebRequest "https://api.bilibili.com/x/v1/dm/list.so?oid=$CID").Content
+        $regex = [regex]'<d p="([^"]+)"[^>]*>([^<]+)</d>'
+        $dm_entries = @()
+        foreach ($m in $regex.Matches($DM_RAW)) {
+            $p = $m.Groups[1].Value -split ','
+            $dm_entries += @{time=[float]$p[0]; text=$m.Groups[2].Value}
+        }
+        $buckets = @{}
+        foreach ($d in $dm_entries) {
+            $b = [math]::Floor($d.time / 10) * 10
+            if (-not $buckets[$b]) { $buckets[$b] = @() }
+            $buckets[$b] += $d.text
+        }
+        $ranked = $buckets.Keys | Sort-Object { -$buckets[$_].Count } | Select-Object -First 8
+        foreach ($k in $ranked) {
+            $samples = ($buckets[$k] | Sort-Object | Get-Unique | Select-Object -First 5) -join " ; "
+            $mm = [math]::Floor($k / 60); $ss = $k % 60
+            Write-Output "DMBUCKET|$k|$($mm):$($ss.ToString('00'))|$($buckets[$k].Count)|$samples"
+        }
+    }
 } else {
     $meta = yt-dlp --no-update --dump-json $URL 2>$null | ConvertFrom-Json
     $TITLE = $meta.title; $UPLOADER = $meta.uploader
 }
 
-# ---- Danmaku (B站 only) ----
-if ($PLATFORM -eq "bilibili" -and $CID) {
-    $DM_RAW = (Invoke-WebRequest "https://api.bilibili.com/x/v1/dm/list.so?oid=$CID").Content
-    $DM_FILE = Join-Path $TMP "danmaku.xml"
-    $DM_RAW | Out-File $DM_FILE -Encoding UTF8
-    # Parse danmaku: extract text + time from <d p="...">text</d>
-    $dm_entries = @()
-    $regex = [regex]'<d p="([^"]+)"[^>]*>([^<]+)</d>'
-    foreach ($m in $regex.Matches($DM_RAW)) {
-        $params = $m.Groups[1].Value -split ','
-        $dm_time = [float]$params[0]
-        $dm_text = $m.Groups[2].Value
-        $dm_entries += @{time=$dm_time; text=$dm_text}
-    }
-    # Aggregate into 10s buckets for density analysis
-    $buckets = @{}
-    foreach ($d in $dm_entries) {
-        $bucket = [math]::Floor($d.time / 10) * 10
-        if (-not $buckets[$bucket]) { $buckets[$bucket] = @() }
-        $buckets[$bucket] += $d.text
-    }
-    # Print top 8 densest segments
-    $ranked = $buckets.Keys | Sort-Object { -$buckets[$_].Count } | Select-Object -First 8
-    foreach ($k in $ranked) {
-        $count = $buckets[$k].Count
-        $mm = [math]::Floor($k / 60)
-        $ss = $k % 60
-        $samples = ($buckets[$k] | Sort-Object | Get-Unique | Select-Object -First 5) -join " ; "
-        Write-Output "DMBUCKET|$k|$($mm):$($ss.ToString('00'))|$count|$samples"
-    }
-}
-
-# Download low-res video (always needed for scene detection)
+# Low-res video
 yt-dlp --no-update $COOKIES.Split(' ') -f "worst[height<=480]" -o "$TMP\video.%(ext)s" $URL 2>&1
 $VIDEO = Get-ChildItem $TMP -Filter "video.*" | Select-Object -First 1 -ExpandProperty FullName
 ```
 
-### Step 2 — Scene Detection + Frame Extraction
+### Step 2 — Scene Detection
 
 ```python
-# scene_detect.py (cross-platform)
 import subprocess, os, re
 
-TMP = os.environ['TMP_DIR']  # set by caller
+TMP = os.environ['TMP_DIR']
 VIDEO = os.path.join(TMP, 'video.mp4')
 FRAMES = os.path.join(TMP, 'frames')
 os.makedirs(FRAMES, exist_ok=True)
 
-# ffmpeg scene detection: sensitivity 0.4
 result = subprocess.run([
     'ffmpeg', '-i', VIDEO,
     '-vf', "select='gt(scene\\,0.4)',showinfo",
@@ -174,165 +213,101 @@ for line in result.stderr.split('\n'):
     if m and float(m.group(1)) > 0:
         scene_times.append(float(m.group(1)))
 
-# Dedup close scenes (< 1.5s apart), cap at 12
 filtered = []
 for t in scene_times:
     if not filtered or t - filtered[-1] >= 1.5:
         filtered.append(t)
 filtered = filtered[:12]
 
-# Extract one frame per scene
 for i, t in enumerate(filtered):
     out = os.path.join(FRAMES, f'scene_{i:02d}.jpg')
     subprocess.run(['ffmpeg', '-y', '-ss', str(t), '-i', VIDEO,
                     '-vframes', '1', '-q:v', '2', out], capture_output=True)
 
-# Print scene times for next step
 for i, t in enumerate(filtered):
     print(f"SCENE|{i}|{t}|{int(t//60)}:{int(t%60):02d}")
 ```
 
-### Step 2b — Danmaku Analysis (B站 only)
+### Step 3 — Generate Summary per Tier
 
-The `DMBUCKET|...` lines already output by Step 1 are fed directly into the LLM summary prompt in Step 3. No additional parsing step needed. The LLM receives:
+#### L1: Local LLM / Gemini Quick
 
-- `$DM_COUNT` — total danmaku count from the B站 view API
-- `DMBUCKET|<second>|<timestamp>|<count>|<samples>` — top 8 densest 10-second segments with representative danmaku text
+Use subtitle transcript (if exists) or Gemini frame descriptions (if no subs). Prompt for a concise overview: title + timeline + key observations + danmaku highlights. No deep analysis sections.
 
-If no danmaku data (YouTube or failed fetch), skip this section in the summary prompt.
+#### L2: GPT-5.5 or Local LLM
 
-### Step 3 — Generate Summary
+Generate full 9-section output using the prompt template below. If no subtitles, use Gemini frame descriptions as input.
 
-Choose mode based on subtitle availability and user preference:
+#### L2.1: GPT-5.5
 
-#### Mode A: Text (subtitles exist)
+Generate L2 + design analysis sections. Requires GPT-5.5 via Leihuo gateway. Use combined input: subtitles (or Gemini frame descriptions) + danmaku data + metadata.
 
-Clean the subtitle, read `references/output-formats.md` for templates, then generate a 9-section summary using the transcript as input. Follow the Chain of Density rules and attribution policy.
-
-#### Mode B: Visual Quick (no subs, default) — Gemini 2.5 Flash
-
-```python
-# Merge scene detection script with Gemini API call
-import base64, json, urllib.request, os
-
-API_KEY = os.environ.get('GEMINI_API_KEY')
-if not API_KEY:
-    print("ERROR: GEMINI_API_KEY not set. Get a free key at https://aistudio.google.com/apikey")
-    print("Or use --deep mode with a Leihuo key instead.")
-    exit(1)
-FRAMES = os.path.join(TMP, 'frames')
-frame_files = sorted([f for f in os.listdir(FRAMES) if f.endswith('.jpg')])
-
-# Build Gemini request with all frames
-parts = [{"text": f"Describe each frame from a game video. Title: {TITLE}. For each frame: location type, season/weather, architecture style, composition, visual mood. Reply in Chinese, one paragraph per frame."}]
-for fname in frame_files:
-    with open(os.path.join(FRAMES, fname), 'rb') as f:
-        b64 = base64.b64encode(f.read()).decode('utf-8')
-    parts.append({"text": f"Frame {fname}:"})
-    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
-
-url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
-payload = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096}}
-req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json"})
-
-with urllib.request.urlopen(req, timeout=180) as resp:
-    gemini_result = json.loads(resp.read().decode('utf-8'))
-frame_descriptions = gemini_result["candidates"][0]["content"]["parts"][0]["text"]
-
-# Then pass frame_descriptions to GPT-5.5 or local LLM for 9-section summary
-# Use the prompt template from Step 3C below
-```
-
-#### Mode C: Visual Deep (--deep or explicit) — GPT-5.5 Direct
-
-```python
-import base64, json, urllib.request, os
-
-LEIHUO_KEY = os.environ.get('LEIHUO_API_KEY')
-if not LEIHUO_KEY:
-    print("ERROR: LEIHUO_API_KEY not set. This requires a Leihuo gateway account.")
-    print("If you don't have one, use --quick mode instead (free, requires GEMINI_API_KEY).")
-    exit(1)
-LEIHUO_URL = os.environ.get('LEIHUO_API_BASE', 'https://ai.leihuo.netease.com/v1/chat/completions')
-
-# Build vision message with all frames (GPT-5.5 supports image_url)
-content = [{"type": "text", "text": f"Analyze these keyframes from a game video titled '{TITLE}' by {UPLOADER}. For each frame describe: location, season, architecture, composition. Then generate a 9-section summary: 章节概览, 总体摘要, 话题章节, 新颖观点, 反直觉观点, 核心张力, 方法论, 关键数据. Reply in Chinese."}]
-for fname in sorted(os.listdir(FRAMES)):
-    with open(os.path.join(FRAMES, fname), 'rb') as f:
-        b64 = base64.b64encode(f.read()).decode('utf-8')
-    content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-
-payload = {
-    "model": "gpt-5.5",
-    "messages": [{"role": "user", "content": content}],
-    "max_tokens": 6000, "temperature": 0.5
-}
-req = urllib.request.Request(LEIHUO_URL, data=json.dumps(payload).encode('utf-8'),
-    headers={"Authorization": f"Bearer {LEIHUO_KEY}", "Content-Type": "application/json"})
-with urllib.request.urlopen(req, timeout=180) as resp:
-    result = json.loads(resp.read().decode('utf-8'))
-summary = result["choices"][0]["message"]["content"]
-# Cost: input=~2000 completion=~3500 → ~$0.18
-```
-
-#### Summary Prompt Template
-
-All modes use this structure. Read `references/output-formats.md` for exact section headers.
+**Prompt template for L2+:**
 
 ```
 Analyze this video. Title: {TITLE}, Uploader: {UPLOADER}.
-Total danmaku: {DM_COUNT} (B站 only).
+Danmaku: {DM_COUNT} total (B站 only).
 
 {Subtitle transcript OR frame descriptions}
 
-{Danmaku density analysis — if B站}
+{Danmaku density buckets — if B站}
 
-Generate a structured summary (9-10 sections, depending on danmaku availability) in Chinese:
-1. 章节概览 — timestamped chapter table
-2. 总体摘要 — 3-5 sentence synthesis + 3-5 key highlights (Chain of Density)
-3. 话题章节 — 4-8 major topics, each 3-5 bullet points (2-3 sentences each)
-4. 关键引用 — verbatim quotes in blockquotes (skip if no spoken content)
-5. 弹幕反应 — (B站 only) highlight-density segments with representative danmaku samples + audience sentiment clusters. Format: timestamp → density count → common reactions. Skip if no danmaku data.
-6. 新颖观点 — non-mainstream insights, 2-3 sentences each
-7. 反直觉观点 — "Common belief: X → Actual: Y" format
-8. 核心张力 — opposing forces, 2-3 sentences per side
-9. 方法论 — reusable design frameworks, sub-bullets for steps
-10. 关键数据 — specific numbers only, never fabricate
-
-Tags: #关卡设计 #场景叙事 #{game_name}
-
-Omit any section without relevant content. Never fabricate. Voice: state ideas directly, no "X says/believes" prefixes.
+Generate output at tier {L2 or L2.1} following the output templates.
+For L2.1: select 3-5 most relevant dimensions from the 10-dim checklist below.
+Every observation must be tied to specific video evidence (timestamp or frame).
+Use "画面显示" for visual evidence, "口播提到" for spoken content, "弹幕集中" for danmaku patterns.
+Never write "should do" — write "note that" or "may want to consider".
 ```
+
+### Step 4 — Determine Evidence Tier
+
+After data extraction, assign the evidence tier:
+- Got video frames + subtitles + danmaku → A
+- Got low-res video + metadata → B
+- Only metadata (title/cover/description) → C
+- Nothing accessible → D (ask for local file)
+
+Include in output header.
 
 ---
 
-## Step 4 — Save Output
+## Prerequisites (One-Time Setup)
 
-Save two files to the output directory (default: current directory, or `YOUTUBE_SUBTITLES_DIR`):
+### Required Tools
+- `yt-dlp`: `pip install yt-dlp`
+- `ffmpeg`: pre-installed on most systems
+- `python3`: standard library only
 
-1. `{title}.md` — full timestamped transcript (if subtitles exist) + danmaku density table (if B站)
-2. `{title}-summary.md` — 9/10-section structured summary (always generated; 10-section when danmaku data available)
+### B站 Cookies
+Install Chrome extension **"Get cookies.txt LOCALLY"** , open bilibili.com, Export → save as `%USERPROFILE%\bilibili_cookies.txt` (Windows) or `~/bilibili_cookies.txt` (Unix). Re-export ~30 days. See `references/cookies-setup.md`.
 
-Obsidian-style frontmatter with `title`, `source`, `author`, `published`, `tags`, `type: source`.
+### API Keys
+> Visual mode only; L1/L2 text mode (subtitles exist) works without keys.
+
+| Key | Source | Cost | Use |
+|-----|--------|------|-----|
+| `GEMINI_API_KEY` | https://aistudio.google.com/apikey | Free 1500/day | Frame descriptions |
+| `LEIHUO_API_KEY` | Leihuo gateway console | ~$0.18/video | L2/L2.1 GPT-5.5 |
+| `LEIHUO_API_BASE` | Leihuo gateway | — | `https://ai.leihuo.netease.com/v1/chat/completions` |
+
+Set via `setx KEY "value"` (Win) or `export KEY="value"` (Unix).
 
 ---
 
-## Quick Reference: When to Use Which Mode
+## Quick Reference
 
 ```
-Has subtitles? ──Yes──→ Text (local LLM, free, 9-section summary)
-     │
-     No
-     │
-     ├── "fast/quick/浏览" → Visual Quick (Gemini free → GPT-5.5 summary ~$0.12)
-     │
-     └── "deep/detailed/深度" → Visual Deep (GPT-5.5 direct, ~$0.18)
+User intent:
+  "总结/看看" ──────────→ L1 速览 (free, fast)
+  "深度/详细" ──────────→ L2 9-section (~$0.12-0.18)
+  "设计/灵感/拆解/竞品" → L2.1 +10 dimensions (~$0.18)
 ```
 
-Cost breakdown per video:
-- Text mode: $0 (local)
-- Visual Quick: $0.12 (Gemini free + GPT-5.5 for final summary)
-- Visual Deep: $0.18 (GPT-5.5 all-in-one)
+Cost per video:
+- L1 text: $0 (local LLM)
+- L1 visual: $0 (Gemini free)
+- L2: ~$0.12 (Gemini + GPT-5.5) or ~$0.18 (GPT-5.5 direct)
+- L2.1: ~$0.18 (GPT-5.5 direct)
 
 ---
 
@@ -340,12 +315,19 @@ Cost breakdown per video:
 
 | Error | Action |
 |-------|--------|
-| yt-dlp not found | Tell user: `pip install yt-dlp` |
-| B站 cookies missing | Tell user: run Step 0 in `references/cookies-setup.md` |
-| B站 cookies expired | Tell user: re-export from "Get cookies.txt LOCALLY" |
-| No subtitles + no video downloaded | Both modes failed. Check URL or network. |
-| No subtitles found | Auto-switch to Visual Quick mode (default) |
-| Gemini 429 (rate limit) | Tell user: free quota exhausted, wait or switch to `--deep` |
-| GPT-5.5 error | Retry once; if persists, fall back to Visual Quick |
-| Scene detection yields 0 frames | Use fixed-interval fallback: extract 1 frame every 10% of duration |
-| ffmpeg not found | Install ffmpeg: `winget install ffmpeg` (Win) or `brew install ffmpeg` (Mac) |
+| yt-dlp not found | `pip install yt-dlp` |
+| B站 cookies missing/expired | See `references/cookies-setup.md` |
+| No subtitles found | Auto-use frame descriptions as input |
+| Gemini 429 | Free quota exhausted; wait or use `--deep` |
+| GPT-5.5 error | Retry once; fallback to L1 |
+| 0 scene frames | Fallback: 1 frame / 10% of duration |
+| ffmpeg not found | `winget install ffmpeg` (Win) / `brew install ffmpeg` (Mac) |
+
+---
+
+## Output Files
+
+- `{title}.md` — transcript (if subs) + danmaku table (if B站)
+- `{title}-summary.md` — structured summary (L1/L2/L2.1)
+
+Obsidian-style frontmatter: `title`, `source`, `author`, `published`, `tags`, `type: source`.
