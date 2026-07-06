@@ -161,8 +161,9 @@ if ($PLATFORM -eq "bilibili") {
     $CID = $META.data.cid
     $DM_COUNT = $META.data.stat.danmaku
     if ($CID) {
-        $DM_RAW = (Invoke-WebRequest "https://api.bilibili.com/x/v1/dm/list.so?oid=$CID").Content
-        $regex = [regex]'<d p="([^"]+)"[^>]*>([^<]+)</d>'
+    # B站弹幕 XML 是 GBK 编码，Invoke-WebRequest 默认 UTF-8 会乱码
+    $DM_RAW = [System.Text.Encoding]::GetEncoding('gbk').GetString((Invoke-WebRequest "https://api.bilibili.com/x/v1/dm/list.so?oid=$CID" -UseBasicParsing).RawContentStream.ToArray())
+    $regex = [regex]'<d p="([^"]+)"[^>]*>([^<]+)</d>'
         $dm_entries = @()
         foreach ($m in $regex.Matches($DM_RAW)) {
             $p = $m.Groups[1].Value -split ','
