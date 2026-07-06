@@ -18,18 +18,18 @@ Detect platform → download subtitles + danmaku + video → scene detection →
 
 **在开始任何处理前，先根据用户措辞确定输出层级：**
 
-| 层级 | 触发词 | 输出内容 | 适用场景 |
-|------|--------|---------|---------|
-| **L1 速览** | `1` `速览` `简单` `快速` | 标题 + 时间轴 + 关键观察 + 弹幕高光 + 证据档位 | 快速扫片、大量浏览 |
-| **L2 深度** | `2` `深度` `详细` `全面` | L1 + 9 段结构化总结 | 单视频深入理解 |
-| **L2.1 设计** | `3` `设计` `策划` `灵感` `拆解` `竞品` `启发` `落地` | L2 + 10 维设计注意点 + 参考知识 + 风险清单 | 策划视角的竞品分析和设计参考 |
+| 层级 | 触发词 | 输出内容 | 证据来源 | 适用场景 |
+|------|--------|---------|---------|---------|
+| **L1 速览** | `1` `速览` `简单` `快速` | 标题 + 简介 + 时间轴（字幕推断）+ 弹幕高光 + 证据档位 | **纯文本** — API元数据 + 字幕 + 弹幕 | 快速扫片，不下载视频 |
+| **L2 深度** | `2` `深度` `详细` `全面` | L1 + 下载视频 + 场景抽帧 + 9 段结构化总结 | API + 字幕 + 弹幕 + 视频帧 | 单视频深入理解 |
+| **L2.1 设计** | `3` `设计` `策划` `灵感` `拆解` `竞品` `启发` `落地` | L2 + 10 维设计注意点 + 参考知识 + 风险清单 | API + 字幕 + 弹幕 + 视频帧 | 策划视角的竞品分析和设计参考 |
 
 **不要根据关键词自动选择层级。** 收到视频链接后，立刻向用户提问选择层级：
 
 > 要对这个视频做哪种分析？
-> 1. **速览** — 时间轴 + 关键观察 + 弹幕高光，适合快速扫片
-> 2. **深度** — 速览 + 9段结构化总结，适合深入理解
-> 3. **设计视角** — 深度 + 10维策划注意点 + 参考知识 + 风险清单
+> 1. **速览** — 纯文本，不下载视频，适合快速扫片
+> 2. **深度** — 下载视频+场景抽帧，9段结构化总结
+> 3. **设计视角** — 深度 + 策划10维注意点 + 参考知识
 
 用户可能用自然语言回答（"深度""2""详细分析""从策划角度"等），对应映射到 L1/L2/L2.1。确认层级后再开始下载数据。
 
@@ -194,9 +194,11 @@ if ($PLATFORM -eq "bilibili") {
     $TITLE = $meta.title; $UPLOADER = $meta.uploader
 }
 
-# Low-res video
-yt-dlp --no-update $COOKIES.Split(' ') -f "worst[height<=480]" -o "$TMP\video.%(ext)s" $URL 2>&1
-$VIDEO = Get-ChildItem $TMP -Filter "video.*" | Select-Object -First 1 -ExpandProperty FullName
+# Low-res video (L2/L2.1 only — L1 skips download entirely)
+if ($TIER -ne "L1") {
+    yt-dlp --no-update $COOKIES.Split(' ') -f "worst[height<=480]" -o "$TMP\video.%(ext)s" $URL 2>&1
+    $VIDEO = Get-ChildItem $TMP -Filter "video.*" | Select-Object -First 1 -ExpandProperty FullName
+}
 ```
 
 ### Step 2 — Scene Detection
@@ -238,9 +240,9 @@ for i, t in enumerate(filtered):
 
 ### Step 3 — Generate Summary per Tier
 
-#### L1: Local LLM / Gemini Quick
+#### L1: Text-Only (no video, no API)
 
-Use subtitle transcript (if exists) or Gemini frame descriptions (if no subs). Prompt for a concise overview: title + timeline + key observations + danmaku highlights. No deep analysis sections.
+Use API metadata + subtitles (if available) + danmaku. Local LLM generates a concise overview: title + description + timeline (inferred from subtitle timestamps or chapter data) + danmaku highlights. No frame extraction, no Gemini/GPT call.
 
 #### L2: GPT-5.5 or Local LLM
 
@@ -306,17 +308,16 @@ Set via `setx KEY "value"` (Win) or `export KEY="value"` (Unix).
 
 ```
 Got video URL → ask user:
-  1. 速览 (L1) — free, fast
-  2. 深度 (L2) — ~$0.12-0.18, 9-section
+  1. 速览 (L1) — free, instant, text-only
+  2. 深度 (L2) — ~$0.12-0.18, downloads video + frames
   3. 设计视角 (L2.1) — ~$0.18, +10 dimensions
 
-Wait for user choice → then run pipeline.
+L1 skips video download entirely (API + subtitles + danmaku only).
 ```
 
 Cost per video:
-- L1 text: $0 (local LLM)
-- L1 visual: $0 (Gemini free)
-- L2: ~$0.12 (Gemini + GPT-5.5) or ~$0.18 (GPT-5.5 direct)
+- L1: $0 (local, text-only, no video download)
+- L2: ~$0.12-0.18 (Gemini + GPT-5.5 or GPT-5.5 direct)
 - L2.1: ~$0.18 (GPT-5.5 direct)
 
 ---
