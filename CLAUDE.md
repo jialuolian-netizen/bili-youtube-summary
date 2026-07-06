@@ -26,27 +26,32 @@ yt-dlp --write-auto-subs --sub-langs zh-Hans \
 整个 skill 就两个文件，逻辑全部内联：
 
 ```
-SKILL.md                      # ← 真理来源：10 个 Step 的完整流程
-                              #   Step 1 装 yt-dlp · 2 识别平台+下字幕 · 3 清洗成
-                              #   cleaned.txt/timestamped.txt · 4 文件名 · 5 元数据 ·
-                              #   6 存原始转录 · 7 长度路由 · 8 map-reduce · 9 生成总结 ·
-                              #   10 清理。bash + python3 heredoc 全内联，无独立模块。
+SKILL.md                      # ← 真理来源：完整的 Python pipeline（内联 heredoc）
+                              #   1. 元数据 · 2. 字幕（含时间校验+重试） · 3. 弹幕
+                              #   4. 视频下载（yt-dlp → playurl API fallback）
+                              #   5. 场景检测（ffmpeg → 固定间隔 fallback）
+                              #   6. 帧描述（x.2→Gemini / x.3→GPT vision）
+                              #   7. 总结（x.2→Gemini / x.3→GPT-5.5）
+                              #   8. 保存 + 清理
 references/
-  output-formats.md           # 9 段总结的标题/模板 + frontmatter 模板（中英双语）
+  cookies-setup.md            # B站 + YouTube cookies 配置指南
+  output-formats.md           # 9 段总结的标题/模板 + frontmatter 模板
 ```
 
 ## Key design constraints
 
 读这些**反直觉**约定，否则容易改坏：
 
-- **没有 .py 文件可改**：所有处理逻辑（字幕清洗、元数据解析、分块）都是 `SKILL.md` 里的内联 python heredoc。改行为 = 改 SKILL.md，别去找模块。
-- **Bilibili 必须带 cookies，YouTube 不带**：`$COOKIE_ARGS` 在 Step 2 设定（B 站为 `--cookies FILE`，YT 为空串），后续 Step 5 元数据复用同一变量。漏带 cookies → B 站 `--list-subs` 报登录错。
+- **没有 .py 文件可改**：所有处理逻辑都是 `SKILL.md` 里的内联 python heredoc。改行为 = 改 SKILL.md，别去找模块。
+- **Bilibili 必须带 cookies，YouTube 推荐带**：B站 `--cookies bilibili_cookies.txt`；YouTube `--cookies youtube_cookies.txt`（可选，但无 cookie 高概率遇到 412 限流）。
+- **B站字幕三重保障**：真 aid → aid=0 → yt-dlp，每层有时间范围校验（字幕时间戳超过视频时长 2x 则丢弃重试）。
+- **B站视频双重下载**：yt-dlp 失败 → playurl API 直取 CDN（urllib，多画质降级 qn=32→64→16→80，flv 自动转 mp4）。
 - **字幕语言优先级是写死的回退链**：Bilibili `ai-zh → zh-Hans → zh-CN → zh → en`；YouTube `zh-Hans → zh-CN → zh → en`。命中第一条即停。
-- **长度路由阈值 120000 字符**：`cleaned.txt ≤ 120k` 直接喂总结；`> 120k` 先 Step 8 map-reduce（40k 块 + 2k 重叠）再汇总，否则丢边界信息。
-- **「总体摘要」走 Chain of Density，不准一次成稿**：先按 `TARGET = max(80, min(words/25, 400))` 定字数，再 3 轮密度迭代。改总结质量先盯这条。
-- **文件名只剥 `/` 和 ASCII `:`**：保留全角标点（`：《》、`），截断 100 字符。别顺手"清理"成 ASCII，会改变落盘文件名。
-- **产物 frontmatter 是 Obsidian 风格，刻意保留**（`[[wikilink]]`、`ctime/mtime`、`type: source`）。这是设计选择不是遗留，改模板去 `references/output-formats.md`。
-- **总结正文禁止归因前缀**：不要写「X 说 / X 认为 / 据 X」，说观点本身——讲者已在 frontmatter 标注，重复即噪音。
+- **场景检测有 fallback**：ffmpeg scene detection 返回 0 帧 → 自动降级为每 10% 时长固定抽帧。
+- **x.2 全 Gemini（免费），x.3 全 GPT-5.5（付费）**：中度档帧描述+总结都用 Gemini；深度档都用 GPT-5.5。
+- **文件名只剥 `/` 和 ASCII `:`**：保留全角标点（`：《》、`），截断 100 字符。
+- **产物 frontmatter 是 Obsidian 风格**（`[[wikilink]]`、`type: source`）。这是设计选择不是遗留。
+- **总结正文禁止归因前缀**：不要写「X 说 / X 认为 / 据 X」，说观点本身。
 
 ## Development Workflow
 
