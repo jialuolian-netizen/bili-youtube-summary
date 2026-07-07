@@ -168,7 +168,7 @@ print(f"META: {title} | {uploader} | {duration//60}:{duration%60:02d}")
 subs_text = ''
 def fetch_bili_subs(aid_val, cid_val, bv_val):
     """Try to get subtitles from player/v2. Returns (subs_text, max_ts, source_name) or ('', 0, '')"""
-    p_url = f'https://api.bilibili.com/x/player/v2?aid={aid_val}&cid={cid_val}&bvid={bv_val}'
+    p_url = f'https://api.bilibili.com/x/player/wbi/v2?aid={aid_val}&cid={cid_val}&bvid={bv_val}'
     p_req = urllib.request.Request(p_url, headers={'Cookie': f'SESSDATA={sess}',
         'User-Agent': 'Mozilla/5.0', 'Referer': f'https://www.bilibili.com/video/{bv_val}/'})
     try:
