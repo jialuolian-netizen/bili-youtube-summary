@@ -43,7 +43,7 @@ references/
 读这些**反直觉**约定，否则容易改坏：
 
 - **没有 .py 文件可改**：所有处理逻辑都是 `SKILL.md` 里的内联 python heredoc。改行为 = 改 SKILL.md，别去找模块。
-- **Bilibili 必须带 cookies，YouTube 推荐带**：B站 `--cookies bilibili_cookies.txt`；YouTube `--cookies youtube_cookies.txt`（可选，但无 cookie 高概率遇到 412 限流）。
+- **Bilibili 必须带 cookies，YouTube/抖音推荐带**：B站 `--cookies bilibili_cookies.txt`；YouTube `--cookies youtube_cookies.txt`；抖音 `--cookies douyin_cookies.txt`（抖音反爬严格，强烈推荐）。
 - **B站字幕三重保障**：真 aid → aid=0 → yt-dlp，每层有时间范围校验（字幕时间戳超过视频时长 2x 则丢弃重试）。
 - **B站视频双重下载**：yt-dlp 失败 → playurl API 直取 CDN（urllib，多画质降级 qn=32→64→16→80，flv 自动转 mp4）。
 - **字幕语言优先级是写死的回退链**：Bilibili `ai-zh → zh-Hans → zh-CN → zh → en`；YouTube `zh-Hans → zh-CN → zh → en`。命中第一条即停。
