@@ -1,6 +1,6 @@
 # bili-youtube-summary · 视频深度分析 Skill
 
-> 丢给它一条 YouTube、Bilibili 或抖音链接，自动下载字幕/弹幕/关键帧，**6 档输出**满足不同场景。任何支持 Skills 的 AI agent 都能用。
+> 丢给它一条 YouTube 或 Bilibili 链接，自动下载字幕/弹幕/关键帧，**6 档输出**满足不同场景。任何支持 Skills 的 AI agent 都能用。
 
 ---
 
@@ -50,7 +50,6 @@ npx skills add jialuolian-netizen/bili-youtube-summary
 | `python3` | 标准库即可 | 清洗/调度 |
 | B站 cookies | Chrome 扩展 "Get cookies.txt LOCALLY" → 导出到 `~/bilibili_cookies.txt` | ~30 天过期 |
 | YouTube cookies | 同上 → youtube.com → Export → `~/youtube_cookies.txt` | 防 412 限流（可选） |
-| 抖音 cookies | 同上 → douyin.com → Export → `~/douyin_cookies.txt` | 防反爬（推荐） |
 
 ---
 

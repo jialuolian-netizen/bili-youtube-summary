@@ -4,7 +4,7 @@ description: >
   Extract subtitles, danmaku & frames from YouTube/Bilibili, generate structured summary.
   6 tiers: text-only (free) / Gemini frames (~$0.12) / GPT-5.5 frames (~$0.18)
   × 普通总结 / 策划视角 (10-dim design checklist).
-  Triggers: ANY URL containing youtube.com, youtu.be, bilibili.com, b23.tv, or douyin.com.
+  Triggers: ANY URL containing youtube.com, youtu.be, bilibili.com, or b23.tv.
 ---
 
 # Video Summarizer (YouTube + Bilibili + Douyin)
@@ -123,12 +123,9 @@ TMP = os.path.join(OUT, '.tmp')
 os.makedirs(TMP, exist_ok=True)
 COOKIES = os.path.join(os.environ['USERPROFILE'], 'bilibili_cookies.txt')
 YT_COOKIES = os.path.join(os.environ['USERPROFILE'], 'youtube_cookies.txt')
-DY_COOKIES = os.path.join(os.environ['USERPROFILE'], 'douyin_cookies.txt')
 IS_BILI = 'bilibili' in URL or 'b23.tv' in URL
-IS_DOUYIN = 'douyin.com' in URL
-IS_YT = not IS_BILI and not IS_DOUYIN
+IS_YT = not IS_BILI
 NEED_VIDEO = TIER.split('.')[1] in ('2', '3')
-PLATFORM = 'bilibili' if IS_BILI else ('douyin' if IS_DOUYIN else 'youtube')
 
 # ===== 0. Cookie health check =====
 def check_cookies(path, platform):
@@ -143,12 +140,10 @@ def check_cookies(path, platform):
 
 if IS_BILI:
     check_cookies(COOKIES, 'Bilibili')
-if IS_DOUYIN:
-    check_cookies(DY_COOKIES, 'Douyin')
 if IS_YT:
     check_cookies(YT_COOKIES, 'YouTube')
 
-print(f"TIER: {TIER} | PLATFORM: {PLATFORM} | VIDEO: {NEED_VIDEO}")
+print(f"TIER: {TIER} | PLATFORM: {'bilibili' if IS_BILI else 'youtube'} | VIDEO: {NEED_VIDEO}")
 
 # ===== 1. Metadata =====
 if IS_BILI:
@@ -158,17 +153,6 @@ if IS_BILI:
         data = json.loads(resp.read())['data']
     title = data['title']; uploader = data['owner']['name']
     duration = data['duration']; cid = data['cid']; dm_total = data['stat']['danmaku']
-elif IS_DOUYIN:
-    # Douyin: yt-dlp for metadata (needs cookies)
-    dy_args = ['yt-dlp', '--no-update', '--dump-json']
-    if os.path.exists(DY_COOKIES):
-        dy_args += ['--cookies', DY_COOKIES]
-    dy_args.append(URL)
-    result = subprocess.run(dy_args, capture_output=True, text=True)
-    meta = json.loads(result.stdout)
-    title = meta.get('title', ''); uploader = meta.get('uploader', '')
-    duration = meta.get('duration', 0)
-    cid = None; dm_total = 0
 else:
     yt_args = ['yt-dlp', '--no-update', '--dump-json']
     if os.path.exists(YT_COOKIES):
@@ -176,31 +160,13 @@ else:
     yt_args.append(URL)
     result = subprocess.run(yt_args, capture_output=True, text=True)
     meta = json.loads(result.stdout)
-    title = meta.get('title', ''); uploader = meta.get('uploader', '')
+    title = meta['title']; uploader = meta['uploader']
     duration = meta.get('duration', 0)
-    cid = None; dm_total = 0
 print(f"META: {title} | {uploader} | {duration//60}:{duration%60:02d}")
 
 # ===== 2. Subtitles =====
 subs_text = ''
-if IS_DOUYIN:
-    # Douyin: try yt-dlp auto-subs (usually no CC)
-    dy_subs_args = ['yt-dlp', '--no-update', '--write-auto-subs', '--sub-langs', 'zh-Hans,zh',
-        '--skip-download', '-o', os.path.join(TMP, 'subs')]
-    if os.path.exists(DY_COOKIES):
-        dy_subs_args += ['--cookies', DY_COOKIES]
-    dy_subs_args.append(URL)
-    subprocess.run(dy_subs_args, capture_output=True)
-    for ext in ['.zh-Hans.vtt', '.zh.vtt']:
-        f = os.path.join(TMP, f'subs{ext}')
-        if os.path.exists(f):
-            with open(f, encoding='utf-8') as fh:
-                subs_text = fh.read()
-            print(f"SUBS: {len(subs_text)} chars (yt-dlp auto)")
-            break
-    if not subs_text:
-        print("SUBS: none (Douyin videos rarely have CC subtitles)")
-elif IS_BILI:
+if IS_BILI:
     sess = ''
     if os.path.exists(COOKIES):
         for line in open(COOKIES, encoding='utf-8'):
@@ -273,26 +239,9 @@ if subs_text and len(subs_text) > 50:
     else:
         print(f"Subtitle content check: {len(matched)}/{len(title_keywords[:5])} title keywords matched")
 
-# ===== 3. Danmaku / Comments =====
+# ===== 3. Danmaku =====
 dm_buckets = ''
-if IS_DOUYIN:
-    # Douyin: try yt-dlp comments extraction
-    try:
-        dy_cmt_args = ['yt-dlp', '--no-update', '--write-comments', '--skip-download',
-            '-o', os.path.join(TMP, 'cmt'), '--print', '%(comments)s']
-        if os.path.exists(DY_COOKIES):
-            dy_cmt_args += ['--cookies', DY_COOKIES]
-        dy_cmt_args.append(URL)
-        result = subprocess.run(dy_cmt_args, capture_output=True, text=True, timeout=60)
-        if result.stdout.strip():
-            comments = result.stdout.strip().split('\n')[:20]
-            dm_buckets = '热门评论:\n' + '\n'.join(c[:120] for c in comments if c.strip())
-            print(f"COMMENTS: {len(comments)} extracted")
-        else:
-            print("COMMENTS: none extracted")
-    except Exception as e:
-        print(f"COMMENTS: error - {e}")
-elif IS_BILI and cid:
+if IS_BILI and cid:
     try:
         dm_url = f'https://api.bilibili.com/x/v1/dm/list.so?oid={cid}'
         dm_req = urllib.request.Request(dm_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -325,8 +274,7 @@ summary = ''
 if NEED_VIDEO:
     print("DOWNLOADING VIDEO...")
     # Try 1: yt-dlp
-    v_cookies = DY_COOKIES if IS_DOUYIN else (COOKIES if IS_BILI else YT_COOKIES)
-    subprocess.run(['yt-dlp', '--no-update', '--cookies', v_cookies,
+    subprocess.run(['yt-dlp', '--no-update', '--cookies', COOKIES if IS_BILI else YT_COOKIES,
         '-f', 'worst[height<=480]', '-o', os.path.join(TMP, 'video.%(ext)s'), URL],
         capture_output=True)
     vf = next((os.path.join(TMP, f) for f in os.listdir(TMP) if f.startswith('video.')), None)
@@ -520,7 +468,6 @@ print("CLEANUP DONE")
 - `python3`: stdlib only
 - B站 cookies: Chrome extension "Get cookies.txt LOCALLY" → `~/bilibili_cookies.txt`
 - YouTube cookies (推荐，防 412): 同上，youtube.com → Export → `~/youtube_cookies.txt`
-- 抖音 cookies (推荐): 同上，douyin.com → Export → `~/douyin_cookies.txt`
 - `GEMINI_API_KEY` (x.2): https://aistudio.google.com/apikey (free)
 - `LEIHUO_API_KEY` + `LEIHUO_API_BASE` (x.2/x.3): 雷火网关
 
@@ -545,11 +492,6 @@ print("CLEANUP DONE")
                  → 安装 Chrome 扩展 "Get cookies.txt LOCALLY"
                  → 打开 bilibili.com → Export → 保存为 ~/bilibili_cookies.txt
   (YouTube 用户可忽略此项)
-检查 抖音:
-  cookies:    ⚠️ 未找到 ~/douyin_cookies.txt
-                 → 安装 Chrome 扩展 "Get cookies.txt LOCALLY"
-                 → 打开 douyin.com → Export → 保存为 ~/douyin_cookies.txt
-                 (推荐，抖音反爬严格)
 检查 YouTube:
   cookies:    ⚠️ 未找到 ~/youtube_cookies.txt
                  → 安装 Chrome 扩展 "Get cookies.txt LOCALLY"
@@ -575,7 +517,7 @@ print("CLEANUP DONE")
 | B站 SESSDATA 无效 | `❌ B站 登录态失效，cookies 中的 SESSDATA 已过期。重新导出 cookies 即可。` |
 | Gemini 429 | `❌ Gemini 免费额度用完。换 1.3/2.3 (GPT-5.5) 继续，或等明天重置。` |
 | GPT-5.5 错误 | `❌ GPT-5.5 调用失败 (原因: {msg})。已自动降级到 1.1 速览模式。` |
-| 视频无法下载 (412/403) | `❌ 视频下载被拦截 (HTTP {code})。B站: cookies 可能过期 → ~/bilibili_cookies.txt。YouTube: 需配置 cookies → ~/youtube_cookies.txt。抖音: 需配置 cookies → ~/douyin_cookies.txt，或更新 yt-dlp: pip install -U yt-dlp` |
+| 视频无法下载 (412/403) | `❌ 视频下载被拦截 (HTTP {code})。B站: cookies 可能过期，重新导出 → ~/bilibili_cookies.txt。YouTube: 需配置 cookies → ~/youtube_cookies.txt，或更新 yt-dlp: pip install -U yt-dlp` |
 | 0 scene frames | `⚠️ 场景检测无结果。已自动降级为固定间隔抽帧 (每 10% 时长一帧)。` |
 | ffmpeg not found | `❌ 未安装 ffmpeg。Windows: winget install ffmpeg / Mac: brew install ffmpeg` |
 | 网络不通 | `❌ 无法访问 B站/YouTube API。请检查网络或 VPN。` |

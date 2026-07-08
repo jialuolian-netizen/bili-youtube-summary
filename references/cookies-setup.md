@@ -50,21 +50,3 @@ Cookies 有效期约 30 天。过期后重复步骤 2 重新导出即可。
 ```powershell
 yt-dlp --no-update --cookies "$env:USERPROFILE\youtube_cookies.txt" --dump-json "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
-
----
-
-## 抖音 Cookies
-
-### 1. 导出 Cookies
-
-1. 打开 `https://www.douyin.com/`，确保已登录
-2. 点击扩展图标 → **Export**
-3. 保存为 `C:\Users\<用户名>\douyin_cookies.txt`
-
-> **重要**：抖音反爬非常严格，无 cookie 时 yt-dlp 几乎无法下载。强烈建议配置。
-
-### 2. 验证
-
-```powershell
-yt-dlp --no-update --cookies "$env:USERPROFILE\douyin_cookies.txt" --dump-json "https://www.douyin.com/video/xxxxx"
-```
